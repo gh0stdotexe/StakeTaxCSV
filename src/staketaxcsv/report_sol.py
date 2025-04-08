@@ -4,27 +4,25 @@ usage: python3 staketaxcsv/report_sol.py <walletaddress> [--format all|cointrack
 Prints transactions and writes CSV(s) to _reports/SOL*.csv
 """
 
-import json
 import logging
-import math
-from json.decoder import JSONDecodeError
+import pprint
+
 
 import staketaxcsv.sol.processor
 from staketaxcsv.common import report_util
-from staketaxcsv.common.Cache import Cache
 from staketaxcsv.common.ErrorCounter import ErrorCounter
 from staketaxcsv.common.Exporter import Exporter
 from staketaxcsv.settings_csv import MESSAGE_ADDRESS_NOT_FOUND, MESSAGE_STAKING_ADDRESS_FOUND, SOL_NODE, TICKER_SOL
 from staketaxcsv.sol import staking_rewards
 from staketaxcsv.sol.api_rpc import RpcAPI
 from staketaxcsv.sol.config_sol import localconfig
-from staketaxcsv.sol.constants import PROGRAMID_STAKE
 from staketaxcsv.sol.progress_sol import SECONDS_PER_STAKING_ADDRESS, SECONDS_PER_TX, ProgressSol
 from staketaxcsv.sol.TxInfoSol import WalletInfo
+from staketaxcsv.sol.txids import get_txids, get_txids_for_accounts
+from staketaxcsv.sol.util_sol import account_exists
+from staketaxcsv.sol.balances_history import balances_history
 
-LIMIT_PER_QUERY = 1000
 RPC_TIMEOUT = 600  # seconds
-ABSOLUTE_MAX_QUERIES = 100
 
 
 def main():
@@ -35,11 +33,14 @@ def read_options(options):
     """ Configure localconfig based on options dictionary. """
     report_util.read_common_options(localconfig, options)
     localconfig.start_date = options.get("start_date", None)
+    localconfig.end_date = options.get("end_date", None)
+    localconfig.exclude_failed = options.get("exclude_failed", localconfig.exclude_failed)
+    localconfig.exclude_associated = options.get("exclude_associated", localconfig.exclude_associated)
     logging.info("localconfig: %s", localconfig.__dict__)
 
 
 def wallet_exists(wallet_address):
-    is_wallet_address, is_staking_address = _account_exists(wallet_address)
+    is_wallet_address, is_staking_address = account_exists(wallet_address)
     if is_wallet_address:
         return True, None
     if is_staking_address:
@@ -55,67 +56,49 @@ def _has_transaction(wallet_address):
     return len(txids) > 0
 
 
-def _account_exists(wallet_address):
-    data = RpcAPI.fetch_account(wallet_address)
-
-    if "result" not in data:
-        return False, False
-    if "error" in data:
-        return False, False
-
-    try:
-        owner = data["result"]["value"]["owner"]
-        if owner == PROGRAMID_STAKE:
-            return False, True
-        else:
-            return True, False
-    except (JSONDecodeError, TypeError):
-        return False, False
-
-
 def txone(wallet_address, txid):
     data = RpcAPI.fetch_tx(txid)
-    s = json.dumps(data, indent=4)
-    print("\nTransaction data:")
-    print(s)
-    print("\n")
+
+    if localconfig.debug:
+        print("tx data:")
+        pprint.pprint(data)
 
     exporter = Exporter(wallet_address, localconfig, TICKER_SOL)
     txinfo = staketaxcsv.sol.processor.process_tx(WalletInfo(wallet_address), exporter, txid, data)
-    txinfo.print()
+
+    if localconfig.debug:
+        print("txinfo:")
+        txinfo.print()
+
     return exporter
 
 
 def estimate_duration(wallet_address):
+    start_date, end_date = localconfig.start_date, localconfig.end_date
+
     logging.info("Fetching staking addresses...")
     num_staking_addresses = len(RpcAPI.fetch_staking_addresses(wallet_address))
 
     logging.info("Fetching txids...")
-    num_txids = _num_txids(wallet_address)
+    num_txids = len(
+        get_txids_for_accounts([wallet_address], progress=None, start_date=start_date, end_date=end_date)
+    )
 
     return SECONDS_PER_STAKING_ADDRESS * num_staking_addresses + SECONDS_PER_TX * num_txids
 
 
-def _num_txids(wallet_address):
-    txids = _query_txids([wallet_address], None)
-    return len(txids)
-
-
 def txhistory(wallet_address):
-    if localconfig.cache:
-        localconfig.blocks = Cache().get_sol_blocks()
-        logging.info("Loaded sol blocks info into cache...")
     logging.info("Using SOLANA_URL=%s...", SOL_NODE)
-    min_date = localconfig.start_date
+    start_date, end_date = localconfig.start_date, localconfig.end_date
 
     progress = ProgressSol()
     exporter = Exporter(wallet_address, localconfig, TICKER_SOL)
     wallet_info = WalletInfo(wallet_address)
 
-    # Fetch data to so that job progress can be estimated ##########
+    # ####### Fetch data to so that job progress can be estimated ##########
 
     # Fetch transaction ids for wallet
-    txids = _txids(wallet_address, progress, min_date)
+    txids = get_txids(wallet_address, progress, start_date, end_date)
 
     # Fetch current staking addresses for wallet
     progress.report_message("Fetching staking addresses...")
@@ -125,7 +108,7 @@ def txhistory(wallet_address):
     # Update progress indicator
     progress.set_estimate(len(wallet_info.get_staking_addresses()), len(txids))
 
-    #################################################################
+    ########################################################################
 
     # Transactions data
     _fetch_and_process_txs(txids, wallet_info, exporter, progress)
@@ -134,78 +117,44 @@ def txhistory(wallet_address):
     progress.update_estimate(len(wallet_info.get_staking_addresses()))
 
     # Staking rewards data
-    staking_rewards.reward_txs(wallet_info, exporter, progress, min_date)
+    staking_rewards.reward_txs(wallet_info, exporter, progress, start_date, end_date)
+
+    # Add staking account transactions to report
+    for staking_addr in wallet_info.get_staking_addresses():
+        logging.info("Get txids for staking_addr=%s", staking_addr)
+        staking_wallet_info = WalletInfo(staking_addr)
+        staking_addr_txids = get_txids(staking_addr, progress, start_date, end_date)
+
+        logging.info("Fetch and process for staking_addr=%s, num_txs=%s",
+                     staking_addr, len(staking_addr_txids))
+        _fetch_and_process_txs(staking_addr_txids, staking_wallet_info, exporter, progress=None)
 
     ErrorCounter.log(TICKER_SOL, wallet_address)
-    if localconfig.cache:
-        # Flush cache to db
-        Cache().set_sol_blocks(localconfig.blocks)
-
     return exporter
 
 
-def _query_txids(addresses, progress, min_date=None):
-    """ Returns transactions txid's across all token account addresses """
-    max_txs = localconfig.limit
-
-    out = []
-    txids_seen = set()
-    for i, address in enumerate(addresses):
-        if progress and i % 10 == 0:
-            message = f"Fetched txids for {i} of {len(addresses)} addresses..."
-            progress.report_message(message)
-
-        # Get transaction txids for this token account
-        before = None
-        for j in range(ABSOLUTE_MAX_QUERIES):
-            logging.info("query %s for address=%s", j, address)
-
-            txids, before = RpcAPI.get_txids(address, limit=LIMIT_PER_QUERY, before=before, min_date=min_date)
-
-            for txid in txids:
-                # Remove duplicate txids
-                if txid not in txids_seen:
-                    out.append(txid)
-                    txids_seen.add(txid)
-
-            # No more transactions
-            if before is None:
-                break
-
-            # Reached max transaction limit
-            if len(txids) > max_txs:
-                break
-
-    # Process oldest first
-    out.reverse()
-    return out
-
-
-def _txids(wallet_address, progress, min_date):
-    # Sometimes, transactions do not all appear under main wallet address when querying transaction history.
-    # So retrieve token addresses too.
-    addresses = [wallet_address]
-    token_accounts = RpcAPI.fetch_token_accounts(wallet_address).keys()
-    addresses.extend(token_accounts)
-
-    out = _query_txids(addresses, progress, min_date)
-    return out
-
-
-def _fetch_and_process_txs(txids, wallet_info, exporter, progress):
+def _fetch_and_process_txs(txids, wallet_info, exporter, progress=None):
     total_count = len(txids)
 
     for i, txid in enumerate(txids):
         elem = RpcAPI.fetch_tx(txid)
         staketaxcsv.sol.processor.process_tx(wallet_info, exporter, txid, elem)
 
-        if i % 10 == 0:
+        if progress and i % 10 == 0:
             # Update progress to db every so often for user
             message = f"Fetched {i + 1} of {total_count} transactions"
             progress.report(i, message, "txs")
 
-    message = f"Finished fetching {total_count} transactions"
-    progress.report(total_count, message, "txs")
+    if progress:
+        message = f"Finished fetching {total_count} transactions"
+        progress.report(total_count, message, "txs")
+
+
+def balhistory(wallet_address):
+    """ Writes historical balances CSV rows to BalExporter object """
+    start_date = localconfig.start_date
+    end_date = localconfig.end_date
+    return balances_history(wallet_address, start_date, end_date)
 
 
 if __name__ == "__main__":

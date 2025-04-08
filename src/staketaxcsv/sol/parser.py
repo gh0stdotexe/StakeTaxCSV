@@ -5,11 +5,14 @@ Data parsing functions applicable to all transactions
 import logging
 import re
 from datetime import datetime, timezone
+from collections import defaultdict
 
 import staketaxcsv.sol.util_sol
 from staketaxcsv.sol import util_sol
 from staketaxcsv.sol.api_rpc import RpcAPI
-from staketaxcsv.sol.constants import BILLION, CURRENCY_SOL, INSTRUCTION_TYPE_DELEGATE, MINT_SOL, PROGRAM_STAKE
+from staketaxcsv.sol.constants import (
+    BILLION, CURRENCY_SOL, INSTRUCTION_TYPE_DELEGATE, INSTRUCTION_TYPE_INITIALIZE,
+    MINT_SOL, PROGRAM_STAKE, MARINADE_STAKER_AUTHORITY)
 from staketaxcsv.sol.handle_transfer import is_transfer
 from staketaxcsv.sol.tickers.tickers import Tickers
 from staketaxcsv.sol.TxInfoSol import TxInfoSol
@@ -70,15 +73,22 @@ def parse_tx(txid, data, wallet_info):
     txinfo.lp_transfers_net, txinfo.lp_fee = _transfers_net(
         txinfo, txinfo.lp_transfers, mint_to=True)
 
-    # Update wallet_info with any staking addresses found
-    addresses = _staking_addresses_found(wallet_address, txinfo.instructions)
-    for address in addresses:
-        wallet_info.add_staking_address(address)
+    # Update wallet_info with staking addresses
+    _update_wallet_info(wallet_info, wallet_address, txinfo.instructions)
+
+    txinfo.wallet_balances = _wallet_balances(data, txinfo.wallet_accounts, txinfo.mints)
 
     return txinfo
 
 
-def _staking_addresses_found(wallet_address, instructions):
+def _update_wallet_info(wallet_info, wallet_address, instructions):
+    # Add any historical staking addresses to wallet_info object
+    staking_addrs = _get_staking_addresses(wallet_address, instructions)
+    for addr in staking_addrs:
+        wallet_info.add_staking_address(addr)
+
+
+def _get_staking_addresses(wallet_address, instructions):
     out = []
     for instruction in instructions:
         parsed = instruction.get("parsed", None)
@@ -90,7 +100,6 @@ def _staking_addresses_found(wallet_address, instructions):
             stake_authority = parsed["info"]["stakeAuthority"]
             if stake_authority == wallet_address:
                 out.append(stake_account)
-
     return out
 
 
@@ -134,29 +143,37 @@ def _balance_changes_tokens(data, mints):
     post_token_balances = data["result"]["meta"]["postTokenBalances"]
     pre_token_balances = data["result"]["meta"]["preTokenBalances"]
 
+    # Convert data into balance dict by account address
     a = {}
     b = {}
-    balance_changes = {}
     for row in pre_token_balances:
-        account_address, currency_a, amount_a, _ = _row_to_amount_currency(row, account_keys, mints)
-        a[account_address] = (currency_a, amount_a)
-
+        account_address, currency_a, amount_a, decimals_a = _row_to_amount_currency(row, account_keys, mints)
+        a[account_address] = (currency_a, amount_a, decimals_a)
     for row in post_token_balances:
-        account_address, currency_b, amount_b, decimals = _row_to_amount_currency(row, account_keys, mints)
-        b[account_address] = (currency_b, amount_b)
+        account_address, currency_b, amount_b, decimals_b = _row_to_amount_currency(row, account_keys, mints)
+        b[account_address] = (currency_b, amount_b, decimals_b)
 
-        # calculate change in balance
-        currency_a, amount_a = a.get(account_address, (currency_b, 0.0))
-        amount_change = round(amount_b - amount_a, decimals)
-
-        # add to result
-        balance_changes[account_address] = (currency_a, amount_change)
-
-    # Handle case where post_token_balance doesn't exist for token (aka zero balance)
+    # fill in amount=0 when token/account doesn't exist for pre and post
     for row in pre_token_balances:
-        account_address, currency_a, amount_a, _ = _row_to_amount_currency(row, account_keys, mints)
-        if account_address not in balance_changes:
-            balance_changes[account_address] = (currency_a, -amount_a)
+        account_address, currency_a, _, decimals_a = _row_to_amount_currency(row, account_keys, mints)
+        if account_address not in b:
+            b[account_address] = (currency_a, 0.0, decimals_a)
+    for row in post_token_balances:
+        account_address, currency_b, _, decimals_b = _row_to_amount_currency(row, account_keys, mints)
+        if account_address not in a:
+            a[account_address] = (currency_b, 0.0, decimals_b)
+
+    # calculate change in balance
+    balance_changes = {}
+    for account_address in a:
+        currency_a, amount_a, decimals_a = a[account_address]
+        currency_b, amount_b, decimals_b = b[account_address]
+        amount_change = round(amount_b - amount_a, decimals_a)
+
+        assert (currency_a == currency_b)
+        assert (decimals_a == decimals_b)
+
+        balance_changes[account_address] = (currency_a, amount_change)
 
     return balance_changes
 
@@ -293,12 +310,20 @@ def _inner_parsed(inner_instructions):
     for elem in inner_instructions:
         if "parsed" in elem:
             parsed = elem["parsed"]
-            info = parsed["info"]
-            type = parsed["type"]
 
-            if type not in out:
-                out[type] = []
-            out[type].append(info)
+            if isinstance(parsed, str):
+                # rare occurrence
+                if "parsed_string" not in out:
+                    out["parsed_string"] = []
+                out["parsed_string"].append(parsed)
+                continue
+            else:
+                info = parsed["info"]
+                elem_type = parsed["type"]
+
+                if elem_type not in out:
+                    out[elem_type] = []
+                out[elem_type].append(info)
 
     return out
 
@@ -314,7 +339,7 @@ def _instruction_accounts(txid, wallet_address, instructions, inner):
             parsed = instruction["parsed"]
             if type(parsed) is dict:
                 # if wallet associated with source
-                if parsed.get("type") in ["initializeAccount", "approve", "transfer", "transferChecked"]:
+                if parsed.get("type") in ["initializeAccount", "initializeAccount3", "approve", "transfer", "transferChecked"]:
                     info = parsed["info"]
 
                     # Grab set of addresses associated with source
@@ -325,15 +350,6 @@ def _instruction_accounts(txid, wallet_address, instructions, inner):
 
                     if accounts.intersection(addresses_source):
                         accounts = accounts.union(addresses_source)
-
-                # if wallet associated with destination
-                if parsed.get("type") == "closeAccount":
-                    info = parsed["info"]
-                    account = info["account"]
-                    destination = info["destination"]
-
-                    if destination == wallet_address:
-                        accounts.add(account)
 
     return accounts
 
@@ -397,7 +413,7 @@ def _transfers_instruction(txinfo, instructions):
                 elif destination in wallet_accounts:
                     transfers_in.append((amount, currency, source, destination))
                 else:
-                    logging.error("Unable to determine direction for info: %s", info)
+                    logging.info("Unable to determine direction for info: %s", info)
                     transfers_unknown.append((amount, currency, source, destination))
 
     return transfers_in, transfers_out, transfers_unknown
@@ -510,3 +526,36 @@ def _log_messages(txid, data):
 
     log_string = "\n".join(log)
     return log_instructions, log, log_string
+
+
+def _wallet_balances(data, wallet_accounts, mints):
+    """
+    Return a dict of <currency> -> <balance> representing the total
+    post-transaction balance (SOL + tokens) for all known wallet accounts.
+    """
+
+    # We'll store the final balances in a dictionary keyed by currency
+    balances = defaultdict(float)
+
+    account_keys = [row["pubkey"] for row in data["result"]["transaction"]["message"]["accountKeys"]]
+
+    # ---------- POST SOL BALANCES ----------
+    post_balances_sol = data["result"]["meta"]["postBalances"]
+    for i, account_address in enumerate(account_keys):
+        if account_address in wallet_accounts:
+            amount_sol = float(post_balances_sol[i]) / BILLION
+            balances[CURRENCY_SOL] += amount_sol
+
+    # ---------- POST TOKEN BALANCES ----------
+    post_token_balances = data["result"]["meta"]["postTokenBalances"]
+    for row in post_token_balances:
+        account_index = row["accountIndex"]
+        account_address = account_keys[account_index]
+
+        if account_address in wallet_accounts:
+            mint = row["mint"]
+            currency = mints[mint]["currency"] if mint in mints else mint
+            amount_token = row["uiTokenAmount"]["uiAmount"] or 0.0
+            balances[currency] += amount_token
+
+    return dict(balances)

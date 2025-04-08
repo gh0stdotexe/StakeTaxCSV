@@ -19,8 +19,10 @@ from staketaxcsv.common.ExporterTypes import (
     TX_TYPE_UNKNOWN,
     TX_TYPE_UNSTAKE,
     TX_TYPE_WITHDRAW_COLLATERAL,
+    TX_TYPE_REALIZED_PNL,
 )
 from staketaxcsv.settings_csv import DONATION_WALLETS
+CUR_USD = "USD"
 
 
 def make_swap_tx(txinfo, sent_amount, sent_currency, received_amount, received_currency,
@@ -138,8 +140,9 @@ def make_repay_tx(txinfo, sent_amount, sent_currency, z_index=0):
     return row
 
 
-def make_simple_tx(txinfo, tx_type, z_index=0):
-    fee_currency = txinfo.fee_currency if txinfo.fee else ""
+def make_simple_tx(txinfo, tx_type, z_index=0, empty_fee=False):
+    fee = "" if empty_fee else txinfo.fee
+    fee_currency = txinfo.fee_currency if fee else ""
 
     row = Row(
         timestamp=txinfo.timestamp,
@@ -148,7 +151,7 @@ def make_simple_tx(txinfo, tx_type, z_index=0):
         received_currency="",
         sent_amount="",
         sent_currency="",
-        fee=txinfo.fee,
+        fee=fee,
         fee_currency=fee_currency,
         exchange=txinfo.exchange,
         wallet_address=txinfo.wallet_address,
@@ -160,8 +163,8 @@ def make_simple_tx(txinfo, tx_type, z_index=0):
     return row
 
 
-def make_unknown_tx(txinfo, z_index=0):
-    return make_simple_tx(txinfo, TX_TYPE_UNKNOWN, z_index)
+def make_unknown_tx(txinfo, z_index=0, empty_fee=False):
+    return make_simple_tx(txinfo, TX_TYPE_UNKNOWN, z_index, empty_fee)
 
 
 def make_unknown_tx_with_transfer(txinfo, sent_amount, sent_currency, received_amount,
@@ -182,6 +185,14 @@ def make_excluded_tx_with_transfer(txinfo, sent_amount, sent_currency, received_
         txinfo, sent_amount, sent_currency, received_amount, received_currency, TX_TYPE_EXCLUDED,
         empty_fee=empty_fee, z_index=z_index
     )
+
+
+# perps realized profit and loss tx (result from selling a position in perpetuals)
+def make_perp_pnl_tx(txinfo, net_gain_or_loss):
+    if net_gain_or_loss >= 0:
+        return _make_tx_exchange(txinfo, "", "", net_gain_or_loss, CUR_USD, TX_TYPE_REALIZED_PNL)
+    elif net_gain_or_loss < 0:
+        return _make_tx_exchange(txinfo, -net_gain_or_loss, CUR_USD, "", "", TX_TYPE_REALIZED_PNL)
 
 
 def _make_tx_received(txinfo, received_amount, received_currency, tx_type, txid=None, empty_fee=False, z_index=0):

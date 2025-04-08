@@ -8,21 +8,21 @@ from requests import Session
 from requests.adapters import HTTPAdapter, Retry
 
 from staketaxcsv.algo.config_algo import localconfig
-from staketaxcsv.common.debug_util import use_debug_files
-from staketaxcsv.settings_csv import ALGO_HIST_INDEXER_NODE, ALGO_INDEXER_NODE, REPORTS_DIR
+from staketaxcsv.common.debug_util import debug_cache
+from staketaxcsv.settings_csv import ALGO_INDEXER_NODE, REPORTS_DIR
 
 # https://developer.algorand.org/docs/get-details/indexer/#paginated-results
 INDEXER_LIMIT = 2000
 
 
-# API documentation: https://algoexplorer.io/api-dev/indexer-v2
+# API documentation: https://editor.swagger.io/?url=https://openapi.algonode.cloud/indexer2.oas3.json
 class Indexer:
     session = None
 
     def __init__(self):
         if not Indexer.session:
             Indexer.session = Session()
-            retries = Retry(total=5, backoff_factor=5)
+            retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
             Indexer.session.mount("https://", HTTPAdapter(max_retries=retries))
 
     def account_exists(self, address):
@@ -33,7 +33,7 @@ class Indexer:
 
         return status_code == 200
 
-    @use_debug_files(localconfig, os.path.join(REPORTS_DIR, "algo", "accounts"))
+    @debug_cache(os.path.join(REPORTS_DIR, "algo", "accounts"))
     def get_account(self, address: str) -> Optional[dict]:
         """
         This function retrieves account information for a given address.
@@ -42,16 +42,13 @@ class Indexer:
           address (str): The address of the Algorand account that we want to retrieve information for.
 
         Returns:
-          A dictionary containing information about the account if successful, `None` otherwise. 
+          A dictionary containing information about the account if successful, `None` otherwise.
           See account schema at https://app.swaggerhub.com/apis/algonode/indexer/2.0#/Account
         """
         endpoint = f"v2/accounts/{address}"
         params = {"include-all": True}
 
         data, status_code = self._query(ALGO_INDEXER_NODE, endpoint, params)
-
-        if status_code == 599:
-            data, status_code = self._query(ALGO_INDEXER_NODE, endpoint, params)
 
         if status_code == 200:
             return data["account"]
@@ -120,7 +117,7 @@ class Indexer:
         else:
             return [], None
 
-    @use_debug_files(localconfig, os.path.join(REPORTS_DIR, "algo", "transactions"))
+    @debug_cache(os.path.join(REPORTS_DIR, "algo", "transactions"))
     def get_all_transactions(self, address: str) -> list:
         """
         This function retrieves all transactions for a given address within a specified date range and
@@ -170,14 +167,14 @@ class Indexer:
         endpoint = "v2/transactions"
         params = {"group-id": group_id}
 
-        data, status_code = self._query(ALGO_HIST_INDEXER_NODE, endpoint, params)
+        data, status_code = self._query(ALGO_INDEXER_NODE, endpoint, params)
 
         if status_code == 200:
             return data["transactions"]
         else:
             return []
 
-    @use_debug_files(localconfig, os.path.join(REPORTS_DIR, "algo", "transactions"))
+    @debug_cache(os.path.join(REPORTS_DIR, "algo", "transactions"))
     def get_transactions_by_app(self, app_id: int, round: int, address: Optional[str] = None) -> list[dict]:
         """
         This function retrieves a list of transactions for a specific application ID, round, and optional
@@ -207,7 +204,7 @@ class Indexer:
         else:
             return []
 
-    @use_debug_files(localconfig, os.path.join(REPORTS_DIR, "algo", "assets"))
+    @debug_cache(os.path.join(REPORTS_DIR, "algo", "assets"))
     def get_asset(self, id: int) -> Optional[dict]:
         """
         This function retrieves asset information.
@@ -219,9 +216,21 @@ class Indexer:
           A dictionary containing asset details if successful, `None` otherwise.
           See asset params schema at https://app.swaggerhub.com/apis/algonode/indexer/2.0#/Asset
         """
-        return self._get_asset(ALGO_INDEXER_NODE, id)
+        endpoint = f"v2/assets/{id}"
+        params = {"include-all": True}
 
-    @use_debug_files(localconfig, os.path.join(REPORTS_DIR, "algo", "assets"))
+        # Temporarily slow down asset requests until we either cache them
+        # or https://github.com/algorand/go-algorand/issues/5250 is resolved.
+        time.sleep(0.1)
+
+        data, status_code = self._query(ALGO_INDEXER_NODE, endpoint, params)
+
+        if status_code == 200:
+            return data["asset"]
+        else:
+            return None
+
+    @debug_cache(os.path.join(REPORTS_DIR, "algo", "assets"))
     def get_deleted_asset(self, id: int) -> Optional[dict]:
         """
         This function retrieves information for an asset that has been deleted.
@@ -233,23 +242,13 @@ class Indexer:
           A dictionary containing asset details if successful, `None` otherwise.
           See asset params schema at https://app.swaggerhub.com/apis/algonode/indexer/2.0#/Asset
         """
-        return self._get_asset(ALGO_HIST_INDEXER_NODE, id)
+        endpoint = f"v2/assets/{id}/transactions"
+        params = {"tx-type": "acfg"}
 
-    def _get_asset(self, node_url, id):
-        endpoint = f"v2/assets/{id}"
-        params = {"include-all": True}
+        data, status_code = self._query(ALGO_INDEXER_NODE, endpoint, params)
 
-        # Temporarily slow down asset requests until we either cache them
-        # or https://github.com/algorand/go-algorand/issues/5250 is resolved.
-        time.sleep(0.1)
-
-        data, status_code = self._query(node_url, endpoint, params)
-
-        if status_code == 599:
-            data, status_code = self._query(node_url, endpoint, params)
-
-        if status_code == 200:
-            return data["asset"]
+        if status_code == 200 and len(data.get("transactions", [])) > 0:
+            return data["transactions"][0]["asset-config-transaction"]
         else:
             return None
 

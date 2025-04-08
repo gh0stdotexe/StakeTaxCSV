@@ -1,26 +1,24 @@
 import ast
 import base64
+import binascii
 import functools
 import logging
 import math
 import time
 from urllib.parse import urlencode
-
 import requests
 from dateutil import parser
-from staketaxcsv.common.ibc.api_common import (
-    EVENTS_TYPE_LIST_DEFAULT,
-    EVENTS_TYPE_RECIPIENT,
-    EVENTS_TYPE_SENDER,
-    EVENTS_TYPE_SIGNER,
-    remove_duplicates,
-)
+
+from staketaxcsv.common.query import get_with_retries
+from staketaxcsv.common.ibc.constants import (
+    EVENTS_TYPE_SENDER, EVENTS_TYPE_RECIPIENT, EVENTS_TYPE_SIGNER, EVENTS_TYPE_LIST_DEFAULT)
+from staketaxcsv.common.ibc.util_ibc import remove_duplicates
 from staketaxcsv.common.ibc.protobuf_decoder import (
     CosmosTransactionFeeExtractor,
     ProtobufParser,
     ProtobufParserCallback,
 )
-from staketaxcsv.fet.fetchhub1.api_rpc import TXS_LIMIT_PER_QUERY
+TXS_LIMIT_PER_QUERY = 50
 
 
 class RpcAPI:
@@ -33,11 +31,11 @@ class RpcAPI:
     def _query(self, uri_path, query_params, sleep_seconds=0.0):
         url = f"{self.node}{uri_path}"
         logging.info("Requesting url %s?%s ...", url, urlencode(query_params))
-        response = self.session.get(url, params=query_params)
+        json_response = get_with_retries(self.session, url, query_params, {})
 
         if sleep_seconds:
             time.sleep(sleep_seconds)
-        return response.json()
+        return json_response
 
     def _block(self, height):
         uri_path = "/block"
@@ -59,7 +57,17 @@ class RpcAPI:
         else:
             raise Exception("Add case for events_type: {}".format(events_type))
 
-        data = self._query(uri_path, query_params, sleep_seconds=1)
+        # Retry up to 5 times, in case of unstable server
+        for i in range(5):
+            data = self._query(uri_path, query_params, sleep_seconds=1)
+            if data.get("error", {}).get("code") == -32603:
+                # unstable server returns this sometimes
+                seconds = i * 2
+                logging.info("Error condition indicating unstable server.  Retrying in %s seconds", seconds)
+                time.sleep(seconds)
+                continue
+            else:
+                break
 
         return data
 
@@ -87,7 +95,6 @@ class RpcAPI:
     @functools.lru_cache
     def block_time(self, height):
         data = self._block(height)
-
         return data["result"]["block"]["header"]["time"]
 
 
@@ -99,7 +106,7 @@ def get_tx(node, txid, normalize=True):
     return elem
 
 
-def get_txs_all(node, wallet_address, progress, max_txs, limit=TXS_LIMIT_PER_QUERY, debug=False,
+def get_txs_all(node, wallet_address, max_txs, progress=None, limit=TXS_LIMIT_PER_QUERY, debug=False,
                 stage_name="default", events_types=None):
     api = RpcAPI(node)
     api.debug = debug
@@ -110,9 +117,10 @@ def get_txs_all(node, wallet_address, progress, max_txs, limit=TXS_LIMIT_PER_QUE
     page_for_progress = 1
     for events_type in events_types:
         for page in range(1, max_pages + 1):
-            message = f"Fetching page {page_for_progress} ..."
-            progress.report(page_for_progress, message, stage_name)
-            page_for_progress += 1
+            if progress:
+                message = f"Fetching page {page_for_progress} ..."
+                progress.report(page_for_progress, message, stage_name)
+                page_for_progress += 1
 
             elems, next_page, _, _ = api.txs_search(wallet_address, events_type, page, limit)
 
@@ -192,8 +200,13 @@ def _decode(elem):
         for kv in event["attributes"]:
             k, v = kv["key"], kv["value"]
 
-            kv["key"] = base64.b64decode(k).decode() if k else ""
-            kv["value"] = base64.b64decode(v).decode() if v else ""
+            try:
+                kv["key"] = base64.b64decode(k).decode() if k else ""
+                kv["value"] = base64.b64decode(v).decode() if v else ""
+            except binascii.Error as e:
+                pass
+            except UnicodeDecodeError as e:
+                pass
 
     elem["tx"] = base64.b64decode(elem["tx"])
 
@@ -209,7 +222,18 @@ def _add_timestamp_from_block_time(elem, node):
     # it's also converted from the RPC format to the LCD format:
     #     i.e. "2021-08-26T21:08:44.86954814Z" -> "2021-08-26T21:08:44Z"
     height = elem["height"]
-    block_timestamp = RpcAPI(node).block_time(height)
+
+    # Retry up to 5 times, in case of unstable server
+    for i in range(5):
+        try:
+            block_timestamp = RpcAPI(node).block_time(height)
+            break
+        except KeyError as e:
+            seconds = i * 2
+            logging.info("KeyError.  Retrying in %s seconds", seconds)
+            time.sleep(seconds)
+            continue
+
     block_timestamp = parser.parse(block_timestamp).strftime("%Y-%m-%dT%H:%M:%SZ")
     elem["timestamp"] = block_timestamp
 
@@ -252,7 +276,8 @@ def _add_messages_from_logs(elem):
                 continue
 
             message = _make_message_from_event_attributes(event_attributes)
-            messages.append(message)
+            if message is not None:
+                messages.append(message)
 
     # add messages into the transaction body element
     elem["tx"]["body"] = {
@@ -265,6 +290,10 @@ def _make_message_from_event_attributes(event_attributes):
     for kv in event_attributes:
         key, value = kv["key"], kv["value"]
         message[key] = value
+
+    # seen in juno.  looks like malformed messages.  just skip.
+    if "action" not in message:
+        return None
 
     # set the message type field that LCD responses provide
     #

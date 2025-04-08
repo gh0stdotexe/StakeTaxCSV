@@ -22,6 +22,7 @@ from staketaxcsv.common.ExporterTypes import (
 from staketaxcsv.common.ibc.MsgInfoIBC import MsgInfoIBC
 from staketaxcsv.common.make_tx import make_simple_tx, make_transfer_out_tx
 from staketaxcsv.settings_csv import ATOM_NODE
+from staketaxcsv.common.ibc import denoms
 
 
 def process_tx(wallet_address, elem, exporter):
@@ -247,10 +248,8 @@ def _amount(amount_string):
     if "ibc/" in amount_string:
         amount, address = amount_string.split("ibc/", 1)
         ibc_address = "ibc/{}".format(address)
-        # currency = common.ibc.api_lcd_v1.ibc_address_to_denom(ATOM_NODE, ibc_address, localconfig.ibc_addresses)
-        # amount = float(amount) / MILLION
 
-        return MsgInfoIBC.amount_currency_from_raw(amount, ibc_address, ATOM_NODE, localconfig.ibc_addresses)
+        return denoms.amount_currency_from_raw(amount, ibc_address, ATOM_NODE)
 
     amount, currency = amount_string.split("u", 1)
     amount = float(amount) / MILLION

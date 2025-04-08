@@ -7,13 +7,9 @@ from urllib.parse import urlencode
 
 import requests
 from dateutil import parser
-from staketaxcsv.common.debug_util import use_debug_files
-from staketaxcsv.common.ibc.api_common import (
-    EVENTS_TYPE_LIST_DEFAULT,
-    EVENTS_TYPE_RECIPIENT,
-    EVENTS_TYPE_SENDER,
-    EVENTS_TYPE_SIGNER,
-)
+from staketaxcsv.common.debug_util import debug_cache
+from staketaxcsv.common.ibc.constants import (
+    EVENTS_TYPE_SENDER, EVENTS_TYPE_RECIPIENT, EVENTS_TYPE_SIGNER, EVENTS_TYPE_LIST_DEFAULT)
 from staketaxcsv.fet.config_fet import localconfig
 from staketaxcsv.settings_csv import REPORTS_DIR
 
@@ -35,7 +31,7 @@ class FetRpcAPI:
             time.sleep(sleep_seconds)
         return response.json()
 
-    @use_debug_files(localconfig, REPORTS_DIR)
+    @debug_cache(REPORTS_DIR)
     def _txs_search(self, wallet_address, events_type, page, per_page, node):
         # Note unused node variable just a hack to make @use_debug_file work without modifications
         uri_path = "/tx_search"
@@ -79,7 +75,7 @@ class FetRpcAPI:
         elem = data.get("result", None)
         return elem
 
-    @use_debug_files(localconfig, REPORTS_DIR)
+    @debug_cache(REPORTS_DIR)
     def _block(self, height):
         uri_path = "/block"
         query_params = {"height": height}
@@ -97,7 +93,7 @@ class FetRpcAPI:
         return timestamp
 
 
-def get_txs_all(node, wallet_address, progress, max_txs, per_page=TXS_LIMIT_PER_QUERY, debug=False,
+def get_txs_all(node, wallet_address, max_txs, progress=None, per_page=TXS_LIMIT_PER_QUERY, debug=False,
                 stage_name="default", events_types=None):
     api = FetRpcAPI(node)
     api.debug = debug
@@ -108,9 +104,10 @@ def get_txs_all(node, wallet_address, progress, max_txs, per_page=TXS_LIMIT_PER_
     page_for_progress = 1
     for events_type in events_types:
         for page in range(1, max_pages + 1):
-            message = f"Fetching page {page_for_progress} ..."
-            progress.report(page_for_progress, message, stage_name)
-            page_for_progress += 1
+            if progress:
+                message = f"Fetching page {page_for_progress} ..."
+                progress.report(page_for_progress, message, stage_name)
+                page_for_progress += 1
 
             elems, next_page, _, _ = api.txs_search(wallet_address, events_type, page, per_page)
 

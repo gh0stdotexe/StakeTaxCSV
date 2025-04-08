@@ -1,6 +1,6 @@
 import bech32
 import logging
-import sha3
+from Crypto.Hash import keccak
 from typing import List, Optional
 
 
@@ -10,9 +10,9 @@ def _checksum_encode(address: List[int]):
     hex_addr = bytes(address).hex()
     checksummed_buffer = ""
 
-    k = sha3.keccak_256()
+    k = keccak.new(digest_bits=256)
     k.update(hex_addr.encode("utf-8"))
-    hashed_address = k.digest().hex()
+    hashed_address = k.hexdigest()
 
     for nibble_index, character in enumerate(hex_addr):
         if character in "0123456789":
@@ -74,3 +74,24 @@ def from_bech32_to_hex(hrp: str, address: str) -> Optional[str]:
     except Exception as e:
         logging.error("Exception converting address %s, exception=%s", address, str(e))
         return None
+
+
+def evmo_addrs(wallet_address):
+    """ Returns ('evmos...', '0x...') given wallet_address in either format """
+    return _both_formats("evmos", wallet_address)
+
+
+def dym_addrs(wallet_address):
+    """ Returns ('dym...', '0x...') given wallet_address in either format """
+    return _both_formats("dym", wallet_address)
+
+
+def _both_formats(prefix, wallet_address):
+    if wallet_address.startswith("0x"):
+        bech32_address = from_hex_to_bech32(prefix, wallet_address)
+        return bech32_address, wallet_address
+    elif wallet_address.startswith(prefix):
+        hex_address = from_bech32_to_hex(prefix, wallet_address)
+        return wallet_address, hex_address
+    else:
+        return None, None

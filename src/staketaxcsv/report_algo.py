@@ -7,7 +7,6 @@ Prints transactions and writes CSV(s) to _reports/ALGO.<walletaddress>.<format>.
 import json
 import logging
 import os
-import pprint
 
 import staketaxcsv.algo.processor
 from staketaxcsv.algo.api.indexer import Indexer
@@ -71,6 +70,8 @@ def wallet_exists(wallet_address):
 
 
 def txone(wallet_address, txid_or_groupid):
+    indexer = Indexer()  # just to get unit test patch to work
+
     progress = ProgressAlgo()
     exporter = Exporter(wallet_address, localconfig, TICKER_ALGO)
 
@@ -92,13 +93,8 @@ def txone(wallet_address, txid_or_groupid):
     if elems is None:
         elems = indexer.get_transactions_by_group(txid_or_groupid)
 
-    print("\ndebug data:")
-    pprint.pprint(elems)
-    print("")
-
     progress.set_estimate(1)
     staketaxcsv.algo.processor.process_txs(wallet_address, dapps, elems, exporter, progress)
-    print("")
 
     return exporter
 
@@ -111,19 +107,23 @@ def txhistory(wallet_address):
 
     account = indexer.get_account(wallet_address)
 
-    dapps = []
-    for p in Dapp.plugins:
-        plugin = p(indexer, wallet_address, account, exporter)
-        logging.info("Loaded plugin for %s", plugin.name)
-        dapps.append(plugin)
+    if account is not None:
+        dapps = []
+        for p in Dapp.plugins:
+            plugin = p(indexer, wallet_address, account, exporter)
+            logging.info("Loaded plugin for %s", plugin.name)
+            dapps.append(plugin)
 
-    # Retrieve data
-    elems = _get_txs(wallet_address, dapps, account, progress)
+        # Retrieve data
+        elems = _get_txs(wallet_address, dapps, progress)
 
-    # Create rows for CSV
-    staketaxcsv.algo.processor.process_txs(wallet_address, dapps, elems, exporter, progress)
+        # Create rows for CSV
+        staketaxcsv.algo.processor.process_txs(wallet_address, dapps, elems, exporter, progress)
 
-    _write_persistent_config(wallet_address)
+        _write_persistent_config(wallet_address)
+    else:
+        logging.error("Failed to retrieve account %s", wallet_address)
+        ErrorCounter.increment("indexer", wallet_address)
 
     # Log error stats if exists
     ErrorCounter.log(TICKER_ALGO, wallet_address)
@@ -131,22 +131,23 @@ def txhistory(wallet_address):
     return exporter
 
 
-def _get_txs(wallet_address, dapps, account, progress):
+def _get_txs(wallet_address, dapps, progress):
     out = indexer.get_all_transactions(wallet_address)
 
-    # Reverse the list so transactions are in chronological order
-    out.reverse()
-    last_round = 0
-    if localconfig.track_block and len(out) > 0:
-        last_round = out[-1]["confirmed-round"]
+    if out:
+        # Reverse the list so transactions are in chronological order
+        out.reverse()
+        last_round = 0
+        if localconfig.track_block and len(out) > 0:
+            last_round = out[-1]["confirmed-round"]
 
-    for app in dapps:
-        out.extend(app.get_extra_transactions())
+        for app in dapps:
+            out.extend(app.get_extra_transactions())
+
+        if last_round:
+            localconfig.min_round = last_round + 1
 
     num_tx = len(out)
-    if last_round:
-        localconfig.min_round = last_round + 1
-
     progress.set_estimate(num_tx)
     message = "Retrieved total {} txids...".format(num_tx)
     progress.report_message(message)

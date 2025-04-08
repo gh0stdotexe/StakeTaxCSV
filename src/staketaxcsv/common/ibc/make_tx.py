@@ -1,4 +1,6 @@
-from staketaxcsv.common.ExporterTypes import TX_TYPE_NOOP, TX_TYPE_STAKING, TX_TYPE_UNKNOWN, TX_TYPE_SPEND
+from staketaxcsv.common.ExporterTypes import (
+    TX_TYPE_AIRDROP, TX_TYPE_NOOP, TX_TYPE_STAKING, TX_TYPE_UNKNOWN, TX_TYPE_SPEND, TX_TYPE_TRADE,
+    TX_TYPE_SELF_TRANSFER)
 from staketaxcsv.common import make_tx
 
 
@@ -29,13 +31,13 @@ def make_simple_tx_with_transfers(txinfo, msginfo, sent_amount, sent_currency, r
     return _make_tx(txinfo, msginfo, sent_amount, sent_currency, received_amount, received_currency)
 
 
-def make_simple_tx(txinfo, msginfo):
-    return _make_tx(txinfo, msginfo, "", "", "", "")
+def make_simple_tx(txinfo, msginfo, tx_type=None):
+    return _make_tx(txinfo, msginfo, "", "", "", "", tx_type=tx_type)
 
 
 def make_spend_tx_fee(txinfo, msginfo):
     row = _make_tx(txinfo, msginfo, txinfo.fee, txinfo.fee_currency, "", "", TX_TYPE_SPEND)
-    row.fee = 0
+    row.fee = ""
     row.fee_currency = ""
     row.comment = msginfo.msg_type
 
@@ -55,6 +57,14 @@ def make_reward_tx(txinfo, msginfo, received_amount, received_currency):
     return _make_tx(txinfo, msginfo, "", "", received_amount, received_currency, TX_TYPE_STAKING)
 
 
+def make_airdrop_tx(txinfo, msginfo, received_amount, received_currency):
+    return _make_tx(txinfo, msginfo, "", "", received_amount, received_currency, TX_TYPE_AIRDROP)
+
+
+def make_swap_tx(txinfo, msginfo, sent_amount, sent_currency, received_amount, received_currency):
+    return _make_tx(txinfo, msginfo, sent_amount, sent_currency, received_amount, received_currency, TX_TYPE_TRADE)
+
+
 def make_transfer_in_tx(txinfo, msginfo, received_amount, received_currency):
     row = make_tx.make_transfer_in_tx(txinfo, received_amount, received_currency)
     row.txid = "{}-{}".format(txinfo.txid, msginfo.msg_index)
@@ -67,6 +77,13 @@ def make_transfer_out_tx(txinfo, msginfo, sent_amount, sent_currency, dest=None)
     row = make_tx.make_transfer_out_tx(txinfo, sent_amount, sent_currency, dest)
     row.txid = "{}-{}".format(txinfo.txid, msginfo.msg_index)
     _add_memo(row, txinfo)
+
+    return row
+
+
+def make_self_transfer_tx(txinfo, msginfo):
+    row = _make_tx(txinfo, msginfo, "", "", "", "", tx_type=TX_TYPE_SELF_TRANSFER)
+    row.txid = "{}-{}".format(txinfo.txid, msginfo.msg_index)
 
     return row
 

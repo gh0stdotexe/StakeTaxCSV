@@ -4,12 +4,11 @@ import base64
 import json
 import logging
 
-import staketaxcsv.common.ibc.api_lcd_v1
-from staketaxcsv.common.ibc.MsgInfoIBC import MsgInfoIBC
 from staketaxcsv.luna1.api_lcd import LcdAPI
 from staketaxcsv.luna1.config_luna1 import localconfig
 from staketaxcsv.luna1.constants import CUR_UST
-from staketaxcsv.settings_csv import TERRA_LCD_NODE
+from staketaxcsv.settings_csv import LUNA1_NODE
+from staketaxcsv.common.ibc import denoms
 
 
 def _contracts(elem):
@@ -61,7 +60,13 @@ def _execute_msg(elem, index=0):
 
 
 def _execute_msg_field(elem, index=0):
-    msg_base64 = elem["tx"]["value"]["msg"][index]["value"]["execute_msg"]
+    v = elem["tx"]["value"]["msg"][index]["value"]
+
+    if "msg" in v:
+        return v["msg"]
+
+    msg_base64 = v["execute_msg"]
+    # msg_base64 = elem["tx"]["value"]["msg"][index]["value"]["execute_msg"]
     if type(msg_base64) is dict:
         return msg_base64
 
@@ -72,7 +77,7 @@ def _execute_msg_field(elem, index=0):
             try:
                 msg[k]["msg"] = json.loads(base64.b64decode(v["msg"]))
             except UnicodeDecodeError as e:
-                msg[k]["msg"] = {"error_decoding": {}}
+                msg[k]["msg"] = {"erro r_decoding": {}}
 
     return msg
 
@@ -122,6 +127,7 @@ def _transfers(elem, wallet_address, txid, multicurrency=False):
 
     return transfers_in, transfers_out
 
+
 def _transfers_from_actions(msg, wallet_address, txid, multicurrency=False):
     transfers_in = []
     transfers_out = []
@@ -141,6 +147,7 @@ def _transfers_from_actions(msg, wallet_address, txid, multicurrency=False):
 
     return transfers_in, transfers_out
 
+
 def _transfers_log(log, wallet_address, multicurrency=False):
     transfers_in = []
     transfers_out = []
@@ -151,9 +158,17 @@ def _transfers_log(log, wallet_address, multicurrency=False):
             attributes = event["attributes"]
 
             for i in range(0, len(attributes), 3):
-                recipient = attributes[i]["value"]
-                sender = attributes[i + 1]["value"]
-                amount_string = attributes[i + 2]["value"]
+                amount_string, recipient, sender = None, None, None
+                for j in range(0, 3):
+                    k = attributes[i + j]["key"]
+                    v = attributes[i + j]["value"]
+
+                    if k == "amount":
+                        amount_string = v
+                    if k == "recipient":
+                        recipient = v
+                    if k == "sender":
+                        sender = v
 
                 if recipient == wallet_address:
                     if multicurrency:
@@ -228,9 +243,8 @@ def _extract_amounts(amount_string):
             # ibc token (i.e. "165ibc/0471F1C4E7AFD3F07702BEF6DC365268D64570F7C1FDC98EA6098DD6DE59817B" for osmo)
             uamount, ibc_address = amount.split("ibc")
             ibc_address = "ibc" + ibc_address
-
-            _, currency = MsgInfoIBC.amount_currency_from_raw(0, ibc_address, TERRA_LCD_NODE, localconfig.ibc_addresses)
-            out[currency] = _float_amount(uamount, currency)
+            amount, currency = denoms.amount_currency_from_raw(uamount, ibc_address, LUNA1_NODE)
+            out[currency] = amount
         else:
             # regular (i.e. 99700703uusd)
             uamount, currency = amount.split("u", 1)
@@ -426,6 +440,14 @@ def _query_lp_address(addr, txid):
 
 
 def _query_wasm(addr):
+    data = LcdAPI.contract_history(addr)
+
+    init_msg = data["entries"][0]["msg"]
+
+    return init_msg
+
+
+def _query_wasm_deprecated(addr):
     data = LcdAPI.contract_info(addr)
 
     init_msg = _init_msg(data)

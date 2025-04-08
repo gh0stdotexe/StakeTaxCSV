@@ -1,24 +1,25 @@
+from copy import deepcopy
 from functools import partial
 from staketaxcsv.algo.api.indexer import Indexer
 from staketaxcsv.algo.asset import Algo
+from staketaxcsv.algo.cost_basis import DepositCostBasisTracker
 from staketaxcsv.algo.dapp import Dapp
 from staketaxcsv.algo.export_tx import (
     export_borrow_tx,
     export_deposit_collateral_tx,
     export_repay_tx,
     export_reward_tx,
-    export_spend_fee_tx,
     export_swap_tx,
     export_unknown,
     export_withdraw_collateral_tx,
 )
 from staketaxcsv.algo.transaction import (
+    generate_inner_transfer_assets,
     get_fee_amount,
     get_inner_transfer_asset,
     get_transaction_note,
     get_transfer_asset,
     is_app_call,
-    is_asset_optin,
     is_transaction_sender,
     is_transfer,
     is_transfer_receiver
@@ -44,15 +45,33 @@ APPLICATION_ID_FOLKSV2_OP_UP = 971335937  # Oracle Price Update?
 APPLICATION_ID_FOLKSV2_POOLS = [
     971368268,   # ALGO
     971370097,   # gALGO
+    2611131944,  # xALGO
     971372237,   # USDC
     971372700,   # USDt
     971373361,   # goBTC
     971373611,   # goETH
     1044267181,  # OPUL
+    1060585819,  # GARD
+    1067289273,  # WBTC
+    1067289481,  # WETH
+    1166977433,  # WAVAX
+    1166980669,  # WSOL
+    1166982094,  # WMPL
+    1216434571,  # WLINK
+    1247053569,  # EURS
+    1258515734,  # GOLD
+    1258524099,  # SILVER
 ]
 APPLICATION_ID_FOLKS_GOVERNANCE_DISTRIBUTOR = [
     991196662,   # Distributor G6
     1073098885,  # Distributor G7
+    1136393919,  # Distributor G8
+    1200551652,  # Distributor G9
+    1282254855,  # Distributor G10
+    1702641473,  # Distributor G11
+    2057814942,  # Distributor G12
+    2330032485,  # Distributor G13
+    2629511242,  # Distributor G14
 ]
 
 NOTE_FOLKSV2_DEPOSIT_APP = "da"
@@ -85,6 +104,7 @@ FOLKSV2_TRANSACTION_GOVERNANCE_UNMINT_PREMINT = "n1wNEA=="  # "unmint_premint" A
 FOLKSV2_TRANSACTION_GOVERNANCE_CLAIM_PREMINT = "kZDyNg=="   # "claim_premint" ABI selector
 FOLKSV2_TRANSACTION_GOVERNANCE_UNMINT = "3c0QwA=="          # "mint" ABI selector
 FOLKSV2_TRANSACTION_GOVERNANCE_REWARDS_CLAIM = "2wMoWg=="   # "claim_rewards" ABI selector
+FOLKSV2_TRANSACTION_ORACLE_REFRESH_PRICES = "lSTx/w=="      # "refresh_prices" ABI selector
 
 APPLICATION_ID_DEFLEX_ORDER_ROUTER = 989365103
 DEFLEX_TRANSACTION_SWAP_FINALIZE = "tTD7Hw=="  # "User_swap_finalize" ABI selector
@@ -96,6 +116,7 @@ class FolksV2(Dapp):
         self.indexer = indexer
         self.user_address = user_address
         self.exporter = exporter
+        self.cost_basis_tracker = DepositCostBasisTracker()
 
     @property
     def name(self):
@@ -112,6 +133,7 @@ class FolksV2(Dapp):
                     or self._is_folksv2_stake_claim_rewards(group)
                     or self._is_folksv2_create_loan(group)
                     or self._is_folksv2_move_to_collateral(group)
+                    or self._is_folksv2_escrow_withdraw(group)
                     or self._is_folksv2_borrow(group)
                     or self._is_folksv2_repay_with_txn(group)
                     or self._is_folksv2_swap_repay(group)
@@ -149,6 +171,9 @@ class FolksV2(Dapp):
             pass
 
         elif self._is_folksv2_move_to_collateral(group):
+            pass
+
+        elif self._is_folksv2_escrow_withdraw(group):
             pass
 
         elif self._is_folksv2_borrow(group):
@@ -224,6 +249,19 @@ class FolksV2(Dapp):
             return False
 
         return is_app_call(group[-1], APPLICATION_ID_FOLKSV2_DEPOSIT, FOLKSV2_TRANSACTION_DEPOSIT_WITHDRAW)
+
+    def _is_folksv2_escrow_withdraw(self, group):
+        length = len(group)
+        if length != 4:
+            return False
+
+        if not is_app_call(group[1], APPLICATION_ID_FOLKSV2_DEPOSIT, FOLKSV2_TRANSACTION_DEPOSIT_WITHDRAW):
+            return False
+
+        if not is_app_call(group[2], APPLICATION_ID_FOLKSV2_ORACLE_ADAPTER, FOLKSV2_TRANSACTION_ORACLE_REFRESH_PRICES):
+            return False
+
+        return is_app_call(group[3], APPLICATION_ID_FOLKSV2_LOANS, FOLKSV2_TRANSACTION_LOAN_SYNC_COLLATERAL)
 
     def _is_folksv2_stake_deposit(self, group):
         length = len(group)
@@ -396,7 +434,8 @@ class FolksV2(Dapp):
         return self._is_folksv2_repay_with_txn(group[2:])
 
     def _is_folksv2_governance_commit(self, group):
-        if len(group) != 5:
+        length = len(group)
+        if length < 3 or length > 5:
             return False
 
         if not is_app_call(group[-1], APPLICATION_ID_FOLKS_GOVERNANCE_DISTRIBUTOR, FOLKSV2_TRANSACTION_GOVERNANCE):
@@ -528,25 +567,36 @@ class FolksV2(Dapp):
     def _handle_folksv2_deposit(self, group, txinfo, z_index=0):
         fee_amount = get_fee_amount(self.user_address, group)
 
+        fasset = get_inner_transfer_asset(group[-1])
         send_asset = get_transfer_asset(group[-2])
 
         export_deposit_collateral_tx(self.exporter, txinfo, send_asset, fee_amount, self.name, z_index)
+
+        self.cost_basis_tracker.deposit(send_asset, fasset)
 
     def _handle_folksv2_withdraw(self, group, txinfo):
         fee_amount = get_fee_amount(self.user_address, group)
 
         receive_asset = get_inner_transfer_asset(group[-1],
                                                 filter=partial(is_transfer_receiver, self.user_address))
+        assets = list(generate_inner_transfer_assets(group[-1]))
+        fasset = deepcopy(assets[0])
+        if len(assets) == 3:
+            fasset -= assets[2]
 
-        # TODO track cost basis to calculate earnings
         export_withdraw_collateral_tx(self.exporter, txinfo, receive_asset, fee_amount, self.name)
+
+        interest = self.cost_basis_tracker.withdraw(fasset, receive_asset)
+        export_reward_tx(self.exporter, txinfo, interest, fee_amount, self.name + " Interest", 1)
 
     def _handle_folksv2_stake_deposit(self, group, txinfo):
         fee_amount = get_fee_amount(self.user_address, group)
 
+        fasset = get_inner_transfer_asset(group[-2])
         send_asset = get_transfer_asset(group[-3])
 
         export_deposit_collateral_tx(self.exporter, txinfo, send_asset, fee_amount, self.name)
+        self.cost_basis_tracker.deposit(send_asset, fasset)
 
     def _handle_folksv2_stake_claim_rewards(self, group, txinfo):
         fee_amount = get_fee_amount(self.user_address, group)
@@ -611,8 +661,9 @@ class FolksV2(Dapp):
     def _handle_folksv2_governance_commit(self, group, txinfo):
         fee_amount = get_fee_amount(self.user_address, group)
 
+        receive_asset = get_inner_transfer_asset(group[-2])
         send_asset = get_transfer_asset(group[-3])
-        export_deposit_collateral_tx(self.exporter, txinfo, send_asset, fee_amount, self.name)
+        export_swap_tx(self.exporter, txinfo, send_asset, receive_asset, fee_amount, self.name)
 
     def _handle_folksv2_governance_burn(self, group, txinfo, z_index=0):
         fee_amount = get_fee_amount(self.user_address, group)

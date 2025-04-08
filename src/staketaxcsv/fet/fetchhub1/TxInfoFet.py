@@ -54,8 +54,9 @@ class MsgInfo:
         self.msg_type = msg_type
         self.message = message
         self.transfers = transfers
+        self.transfers_net = transfers
         self.log = log
-        self.wasm = MsgInfoIBC.wasm(log)
+        self.wasm = MsgInfoIBC._wasm(log)
         self.contract = self._contract(message)
 
     def _contract(self, message):

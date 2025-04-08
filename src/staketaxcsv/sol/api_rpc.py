@@ -1,14 +1,13 @@
 import logging
-import random
 import time
 from datetime import datetime, timezone
-
 import requests
-from staketaxcsv.common.debug_util import use_debug_files
+
+from staketaxcsv.common.query import post_with_retries
+from staketaxcsv.common.debug_util import debug_cache
 from staketaxcsv.settings_csv import REPORTS_DIR, SOL_NODE
 from staketaxcsv.sol.config_sol import localconfig
-from staketaxcsv.sol.constants import BILLION, PROGRAMID_STAKE, PROGRAMID_TOKEN_ACCOUNTS
-
+from staketaxcsv.sol.constants import BILLION, PROGRAMID_STAKE, PROGRAMID_TOKEN_ACCOUNTS, PROGRAMID_TOKEN_2022
 TOKEN_ACCOUNTS = {}
 
 
@@ -24,22 +23,10 @@ class RpcAPI(object):
             "params": params_list,
             "id": myid
         }
-        headers = {}
 
-        try:
-            response = cls.session.post(SOL_NODE, json=data, headers=headers)
-
-        except TimeoutError:
-            # quicknode server sometimes refuses connection after hundreds of requests
-            s = random.randint(60, 180)
-            logging.warning("Returned timeout.  Sleeping %s seconds and retrying once...", s)
-            time.sleep(s)
-            response = cls.session.post(SOL_NODE, json=data, headers=headers)
-
-        result = response.json()
+        result = post_with_retries(cls.session, SOL_NODE, data, {}, retries=5, backoff_factor=5)
 
         if "api.mainnet-beta.solana.com" in SOL_NODE:
-            # mainnet: a bit slower to avoid rate-limiting errors
             time.sleep(0.3)
         else:
             time.sleep(0.1)
@@ -47,11 +34,18 @@ class RpcAPI(object):
         return result
 
     @classmethod
-    def _is_rate_limit_exceeded(cls, result):
-        if "error" in result and "code" in result["error"] and result["error"]["code"] == 429:
-            return True
-        else:
-            return False
+    def _fetch_with_retries(cls, method, params_list, retries=10, backoff_factor=0.2):
+        for i in range(retries):
+            data = cls._fetch(method, params_list)
+
+            if "result" in data:
+                break
+            logging.info("no result in method=%s, params_list=%s.  retrying i=%s....",
+                         method, params_list, i)
+            logging.info("data: %s", data)
+            time.sleep(backoff_factor * i)
+
+        return data
 
     @classmethod
     def fetch_account(cls, address):
@@ -61,6 +55,7 @@ class RpcAPI(object):
     @classmethod
     def get_block_time(cls, block):
         params_list = [int(block)]
+
         data = cls._fetch("getBlockTime", params_list)
 
         ts = data["result"]
@@ -73,14 +68,19 @@ class RpcAPI(object):
             int(slot),
             {
                 "encoding": "jsonParsed",
-                "rewards": True
+                "rewards": True,
+                "maxSupportedTransactionVersion": 64,  # just choosing accepted high number
             }
         ]
-        data = cls._fetch("getBlock", params_list)
+
+        data = cls._fetch_with_retries("getBlock", params_list, retries=40, backoff_factor=1)
 
         try:
             rewards = data["result"]["rewards"]
         except KeyError:
+            logging.error("Unknown result in rpc method getBlock")
+            logging.error("data:%s", data)
+
             return None
 
         out = []
@@ -93,7 +93,7 @@ class RpcAPI(object):
         return out
 
     @classmethod
-    @use_debug_files(localconfig, REPORTS_DIR)
+    @debug_cache(REPORTS_DIR)
     def _get_inflation_reward(cls, staking_address, epoch):
         params_list = [
             [staking_address],
@@ -108,18 +108,23 @@ class RpcAPI(object):
     def get_inflation_reward(cls, staking_address, epoch):
         data = cls._get_inflation_reward(staking_address, epoch)
 
+        logging.info("rpc get_inflation_reward for staking_address=%s, epoch=%s:", staking_address, epoch)
+        logging.info(data)
+
+        # Throttled at 1 req/sec, I think at rpc api level, but a tad unsure.
+        time.sleep(1)
+
         if not data or "result" not in data:
-            return None, None
+            return None
 
         try:
             val = data["result"][0]
             if val:
                 amount = val["amount"] / BILLION
-                slot = val["effectiveSlot"]
-                return amount, slot
+                return amount
         except KeyError:
             pass
-        return None, None
+        return None
 
     @classmethod
     def get_latest_epoch(cls):
@@ -139,7 +144,7 @@ class RpcAPI(object):
         return addresses
 
     @classmethod
-    @use_debug_files(localconfig, REPORTS_DIR)
+    @debug_cache(REPORTS_DIR)
     def _fetch_staking_addresses(cls, wallet_address):
         params_list = [
             PROGRAMID_STAKE,
@@ -158,30 +163,35 @@ class RpcAPI(object):
         return cls._fetch("getProgramAccounts", params_list)
 
     @classmethod
-    @use_debug_files(localconfig, REPORTS_DIR)
+    @debug_cache(REPORTS_DIR)
     def fetch_tx(cls, txid):
-        params_list = [txid, {"encoding": "jsonParsed"}]
-        return cls._fetch("getConfirmedTransaction", params_list)
+        params_list = [txid, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
+        return cls._fetch("getTransaction", params_list)
 
     @classmethod
     def fetch_token_accounts(cls, wallet_address):
         if wallet_address in TOKEN_ACCOUNTS:
             return TOKEN_ACCOUNTS[wallet_address]
 
-        data = cls._fetch_token_accounts(wallet_address)
+        data = cls._fetch_token_accounts(wallet_address, PROGRAMID_TOKEN_ACCOUNTS)
+        data2 = cls._fetch_token_accounts(wallet_address, PROGRAMID_TOKEN_2022)
 
-        result = cls._extract_token_accounts(data["result"]["value"])
+        result = {}
+        result.update(cls._extract_token_accounts(data["result"]["value"]))
+        result.update(cls._extract_token_accounts(data2["result"]["value"]))
+
         TOKEN_ACCOUNTS[wallet_address] = result
         return result
 
     @classmethod
-    @use_debug_files(localconfig, REPORTS_DIR)
-    def _fetch_token_accounts(cls, wallet_address):
-        logging.info("Querying _fetch_token_accounts_()... wallet_address=%s", wallet_address)
+    @debug_cache(REPORTS_DIR)
+    def _fetch_token_accounts(cls, wallet_address, program_id):
+        logging.info("Querying _fetch_token_accounts_()... wallet_address=%s, program_id=%s",
+                     wallet_address, program_id)
         params_list = [
             wallet_address,
             {
-                "programId": PROGRAMID_TOKEN_ACCOUNTS
+                "programId": program_id
             },
             {
                 "encoding": "jsonParsed"
@@ -234,16 +244,10 @@ class RpcAPI(object):
         return cls._fetch("getProgramAccounts", params_list)
 
     @classmethod
-    def _unix_timestamp(cls, thedate):
-        y, m, d = thedate.split("-")
-        dt = datetime(int(y), int(m), int(d))
-        return dt.replace(tzinfo=timezone.utc).timestamp()
+    def get_txids(cls, wallet_address, limit=None, before_txid=None):
+        exclude_failed = localconfig.exclude_failed
 
-    @classmethod
-    def get_txids(cls, wallet_address, limit=None, before=None, min_date=None):
-        min_date_ts = cls._unix_timestamp(min_date) if min_date else None
-
-        data = cls._get_txids(wallet_address, limit, before)
+        data = cls._get_txids(wallet_address, limit, before_txid)
 
         if "result" not in data or data["result"] is None:
             return [], None
@@ -256,17 +260,17 @@ class RpcAPI(object):
             if info["confirmationStatus"] != "finalized":
                 continue
 
+            # Omit failed transactions if exclude_failed setting is on.
+            if exclude_failed:
+                if info.get("err") is not None:
+                    continue
+
             txid = info["signature"]
+            block_time = info["blockTime"]
 
-            # Restrict to range (min_date, today) if min_date specified
-            if min_date_ts:
-                unix_timestamp = info["blockTime"]
-                if unix_timestamp < min_date_ts:
-                    return out, None
+            out.append((txid, block_time))
 
-            out.append(txid)
-
-        # Determine "before" argument in subsequent query: use last txid of this query
+        # Determine "before_txid" argument in subsequent query: use last txid of this query
         if data["result"]:
             last_txid = data["result"][-1]["signature"]
         else:
@@ -275,7 +279,7 @@ class RpcAPI(object):
         return out, last_txid
 
     @classmethod
-    @use_debug_files(localconfig, REPORTS_DIR)
+    @debug_cache(REPORTS_DIR)
     def _get_txids(cls, wallet_address, limit=None, before=None):
         config = {}
         if limit:
@@ -287,4 +291,4 @@ class RpcAPI(object):
             config
         ]
 
-        return cls._fetch("getConfirmedSignaturesForAddress2", params_list)
+        return cls._fetch("getSignaturesForAddress", params_list)

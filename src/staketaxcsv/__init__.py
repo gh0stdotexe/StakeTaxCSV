@@ -27,7 +27,10 @@ Example usage:
     >>> # check address is valid
     >>> staketaxcsv.has_csv("ATOM", address)
     True
+    >>> # write balance history CSV
+    >>> staketaxcsv.historical_balances("ATOM", address)
+    ...
 
 """
 
-from .api import csv, csv_all, formats, tickers, transaction, has_csv
+from .api import historical_balances, csv, csv_all, has_csv, formats, tickers, transaction

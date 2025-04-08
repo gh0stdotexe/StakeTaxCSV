@@ -12,9 +12,10 @@ def _make_tx_type(msginfo):
     return "_" + msg_type
 
 
-def _ingest_rows(exporter, rows, comment):
+def _ingest_rows(exporter, rows, comment=None):
     for i, row in enumerate(rows):
-        row.comment = comment
+        if comment:
+            row.comment = comment
         if i > 0:
             row.fee, row.fee_currency = "", ""
         exporter.ingest_row(row)
@@ -29,7 +30,7 @@ def _period_lock_id(msginfo):
         event_type = event["type"]
         attributes = event["attributes"]
 
-        if event_type in ["lock_tokens", "begin_unlock", "add_tokens_to_lock"]:
+        if event_type in ["lock_tokens", "begin_unlock", "add_tokens_to_lock", "unlock"]:
             for kv in attributes:
                 k, v = kv["key"], kv["value"]
                 if k == "period_lock_id":

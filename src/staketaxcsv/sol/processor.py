@@ -8,14 +8,22 @@ from staketaxcsv.sol.handle_account_misc import (
     handle_init_account_tx,
     is_close_account_tx,
     is_init_account_tx,
+    handle_claim_staking_tip,
 )
 from staketaxcsv.sol.handle_jupiter import (
     handle_jupiter_aggregator_v1,
     handle_jupiter_aggregator_v2,
     handle_jupiter_aggregator_v3,
     handle_jupiter_aggregator_v4,
+    handle_jupiter_aggregator_v6,
 )
-from staketaxcsv.sol.handle_marinade import handle_marinade
+from staketaxcsv.sol.handle_jupiter_airdrop import handle_wen_airdrop
+from staketaxcsv.sol.handle_jupiter_dca import handle_jupiter_dca
+from staketaxcsv.sol.handle_jupiter_limit import handle_jupiter_limit
+from staketaxcsv.sol.handle_jupiter_limit_v2 import handle_jupiter_limit_v2
+from staketaxcsv.sol.handle_jupiter_perp import handle_jupiter_perp
+from staketaxcsv.sol.handle_marinade import (
+    handle_marinade, is_marinade_native_staking_create_tx, handle_marinade_native_staking_create_tx)
 from staketaxcsv.sol.handle_metaplex import handle_metaplex, handle_nft_mint, is_nft_mint
 from staketaxcsv.sol.handle_nft_market import get_nft_program, handle_nft_exchange
 from staketaxcsv.sol.handle_notimestamp import handle_notimestamp_tx, is_notimestamp_tx
@@ -60,8 +68,10 @@ def process_tx(wallet_info, exporter, txid, data):
             handle_serumv3(exporter, txinfo)
 
         # Marinade Finance
-        elif co.PROGRAMID_MARINADE in program_ids:
+        elif co.PROGRAMID_MARINADE in program_ids or co.PROGRAMID_MARINADE_V2 in program_ids:
             handle_marinade(exporter, txinfo)
+        elif is_marinade_native_staking_create_tx(txinfo):
+            handle_marinade_native_staking_create_tx(wallet_info, exporter, txinfo)
 
         # Unknown programs
         elif co.PROGRAMID_UNKNOWN_DJV in program_ids:
@@ -95,7 +105,18 @@ def process_tx(wallet_info, exporter, txid, data):
         elif co.PROGRAMID_SABER_FARM_SSF in program_ids:
             handle_saber_farm_ssf(exporter, txinfo)
 
-        # Jupiter Aggregator
+        # ### Jupiter programs
+
+        # important that these are before jupiter aggregator programs
+        elif co.PROGRAMID_JUPITER_LIMIT in program_ids:
+            handle_jupiter_limit(exporter, txinfo)
+        elif co.PROGRAMID_JUPITER_LIMIT_V2 in program_ids:
+            handle_jupiter_limit_v2(exporter, txinfo)
+        elif co.PROGRAMID_JUPITER_DCA_V6 in program_ids:
+            handle_jupiter_dca(exporter, txinfo)
+        elif co.PROGRAMID_JUPITER_PERPERTUAL in program_ids:
+            handle_jupiter_perp(exporter, txinfo)
+
         elif co.PROGRAMID_JUPITER_AGGREGATOR_V1 in program_ids:
             handle_jupiter_aggregator_v1(exporter, txinfo)
         elif co.PROGRAMID_JUPITER_AGGREGATOR_V2 in program_ids:
@@ -104,6 +125,12 @@ def process_tx(wallet_info, exporter, txid, data):
             handle_jupiter_aggregator_v3(exporter, txinfo)
         elif co.PROGRAMID_JUPITER_AGGREGATOR_V4 in program_ids:
             handle_jupiter_aggregator_v4(exporter, txinfo)
+        elif co.PROGRAMID_JUPITER_AGGREGATOR_V6 in program_ids:
+            handle_jupiter_aggregator_v6(exporter, txinfo)
+        elif co.PROGRAMID_JUPITER_WEN_AIRDROP in program_ids:
+            handle_wen_airdrop(exporter, txinfo)
+
+        ###
 
         # Metaplex NFT Candy Machinine program
         elif co.PROGRAMID_METAPLEX_CANDY in program_ids:
@@ -116,6 +143,10 @@ def process_tx(wallet_info, exporter, txid, data):
         # NFT transactions
         elif is_nft_mint(txinfo):
             handle_nft_mint(exporter, txinfo)
+
+        # staking account claim transaction
+        elif co.PROGRAMID_CLAIM_STAKING_TIP in program_ids:
+            handle_claim_staking_tip(exporter, txinfo)
 
         # Other
         elif co.PROGRAMID_VOTE in program_ids:
@@ -136,7 +167,7 @@ def process_tx(wallet_info, exporter, txid, data):
     except Exception as e:
         logging.error("Exception when handling txid=%s, exception=%s", txid, str(e))
         ErrorCounter.increment("exception", txid)
-        handle_unknown(exporter, txinfo)
+        handle_unknown_detect_transfers(exporter, txinfo)
 
         if localconfig.debug:
             raise e

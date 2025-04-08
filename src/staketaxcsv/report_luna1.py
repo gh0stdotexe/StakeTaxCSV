@@ -10,10 +10,8 @@ Notes:
     * https://columbus-lcd.terra.dev/swagger/
 """
 
-import json
 import logging
 import math
-import os
 import pprint
 
 import staketaxcsv.api
@@ -28,6 +26,8 @@ from staketaxcsv.luna1.api_lcd import LcdAPI
 from staketaxcsv.luna1.config_luna1 import localconfig
 from staketaxcsv.luna1.progress_terra import SECONDS_PER_TX_FETCH, SECONDS_PER_TX_PROCESS, ProgressTerra
 from staketaxcsv.settings_csv import TICKER_LUNA1
+from staketaxcsv.common.ibc.decorators import set_ibc_cache
+from staketaxcsv import settings_csv
 
 
 def main():
@@ -52,14 +52,13 @@ def wallet_exists(wallet_address):
 
 def txone(wallet_address, txid):
     data = FcdAPI.get_tx(txid)
-    print("\ndebug data:")
-    pprint.pprint(data)
-    print("")
 
     exporter = Exporter(wallet_address, localconfig, TICKER_LUNA1)
     txinfo = staketaxcsv.luna1.processor.process_tx(wallet_address, data, exporter)
-    txinfo.print()
-    print("")
+
+    if localconfig.debug:
+        print("txinfo:")
+        txinfo.print()
 
     return exporter
 
@@ -75,8 +74,9 @@ def _max_queries():
     return max_queries
 
 
+@set_ibc_cache()
 def txhistory(wallet_address):
-    if localconfig.cache:
+    if settings_csv.DB_CACHE:
         cache = Cache()
         _cache_load(cache)
 
@@ -97,13 +97,12 @@ def txhistory(wallet_address):
     # Log error stats if exists
     ErrorCounter.log(TICKER_LUNA1, wallet_address)
 
-    if localconfig.cache:
+    if settings_csv.DB_CACHE:
         _cache_push(cache)
     return exporter
 
 
 def _cache_load(cache):
-    localconfig.ibc_addresses = cache.get_ibc_addresses()
     localconfig.currency_addresses = cache.get_terra_currency_addresses()
     localconfig.decimals = cache.get_terra_decimals()
     localconfig.lp_currency_addresses = cache.get_terra_lp_currency_addresses()
@@ -112,7 +111,6 @@ def _cache_load(cache):
 
 
 def _cache_push(cache):
-    cache.set_ibc_addresses(localconfig.ibc_addresses)
     cache.set_terra_currency_addresses(localconfig.currency_addresses)
     cache.set_terra_decimals(localconfig.decimals)
     cache.set_terra_lp_currency_addresses(localconfig.lp_currency_addresses)

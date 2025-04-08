@@ -1,8 +1,10 @@
 import logging
+import pprint
 import re
+import base64
 
 import staketaxcsv.common.ibc.constants as co
-from staketaxcsv.common.ibc.api_lcd_v1 import ibc_address_to_denom
+from staketaxcsv.common.ibc import util_ibc, denoms
 
 COIN_RECEIVED = "coin_received"
 COIN_SPENT = "coin_spent"
@@ -15,23 +17,51 @@ class MsgInfoIBC:
     """ Single message info for index <i> """
 
     lcd_node = None
-    ibc_addresses = None
     wallet_address = None
 
-    def __init__(self, wallet_address, msg_index, message, log, lcd_node, ibc_addresses):
+    def __init__(self, wallet_address, msg_index, message, log=None, lcd_node=None, events=None):
+        """
+        Parses a single message info for index <msg_index>.
+        Either `log` or `events` must be provided.
+        """
         if lcd_node is not None:
             MsgInfoIBC.lcd_node = lcd_node
-            MsgInfoIBC.ibc_addresses = ibc_addresses
 
         MsgInfoIBC.wallet_address = wallet_address
         self.msg_index = msg_index
         self.message = message
         self.msg_type = self._msg_type(message)
         self.log = log
+
+        # Unified events extraction
+        self.events = log["events"] if log else events or []
+
         self.transfers = self._transfers()
-        self.transfers_event = self._transfers_transfer_event(show_addrs=True)
-        self.wasm = MsgInfoIBC.wasm(log)
+        self.transfers_net = util_ibc.aggregate_transfers_net(self.transfers[0], self.transfers[1])
+        self.transfers_net_exact = util_ibc.aggregate_transfers_net(
+            self.transfers[0], self.transfers[1], tiny_amount_filter=False
+        )
+        self.transfers_event = self._transfers_from_transfer_event(show_addrs=True)
+        self.wasm = MsgInfoIBC._wasm(log) if log else []
         self.contract = self._contract(message)
+        self.events_by_type = self._events_by_type()
+
+    def print(self):
+        print("\nmsg{}:".format(self.msg_index))
+        print("\tmsg_type: {}".format(self.msg_type))
+        print("\tcontract: {}".format(self.contract))
+        print("\ttransfers_in: {}".format(self.transfers[0]))
+        print("\ttransfers_out: {}".format(self.transfers[1]))
+        print("\ttransfers_net_in: {}".format(self.transfers_net[0]))
+        print("\ttransfers_net_out: {}".format(self.transfers_net[1]))
+        print("\ttransfers_net_exact_in: {}".format(self.transfers_net_exact[0]))
+        print("\ttransfers_net_exact_out: {}".format(self.transfers_net_exact[1]))
+        print("\n\tmessage:")
+        pprint.pprint(self.message)
+        print("\n\twasm:")
+        pprint.pprint(self.wasm)
+        print("\n\tevents_by_type:")
+        pprint.pprint(self.events_by_type)
 
     def _msg_type(self, message):
         if "@type" in message:
@@ -57,13 +87,12 @@ class MsgInfoIBC:
 
         if not self._has_coin_spent_received():
             # Only add "transfer" event if "coin_received"/"coin_spent" events do not exist
-            transfers_in, transfers_out = self._transfers_transfer_event()
+            transfers_in, transfers_out = self._transfers_from_transfer_event()
 
         return transfers_in, transfers_out
 
     def _has_event_type(self, target_event_type):
-        events = self.log["events"]
-        for event in events:
+        for event in self.events:
             event_type, attributes = event["type"], event["attributes"]
             if event_type == target_event_type:
                 return True
@@ -75,11 +104,16 @@ class MsgInfoIBC:
     def _transfers_coin_received(self):
         transfers_in = []
 
-        events = self.log["events"]
-        for event in events:
+        for event in self.events:
             event_type, attributes = event["type"], event["attributes"]
 
+            # In rare cases, base64 decode required.
+            self._handle_base64_attributes(attributes)
+
             if event_type == COIN_RECEIVED:
+                # Remove authz_msg_index key/values (if exists) so that uniform logic afterwards is consistent.
+                attributes = self._remove_authz_msg_index(attributes)
+
                 for i in range(0, len(attributes), self._num_keys(attributes)):
                     first_key = attributes[i]["key"]
 
@@ -99,14 +133,39 @@ class MsgInfoIBC:
 
         return transfers_in
 
+    def _handle_base64_attributes(self, attributes):
+        # In rare cases, base64 decode required for elements under attributes
+        if len(attributes) > 0 and "index" in attributes[0]:
+            try:
+                for attr in attributes:
+                    if "key" in attr:
+                        attr["key"] = base64.b64decode(attr["key"]).decode()
+                    if "value" in attr:
+                        attr["value"] = base64.b64decode(attr["value"]).decode()
+            except Exception as e:
+                pass
+
+    def _remove_authz_msg_index(self, attributes):
+        out = []
+        for kv in attributes:
+            if kv["key"] == "authz_msg_index":
+                continue
+            out.append(kv)
+        return out
+
     def _transfers_coin_spent(self):
         transfers_out = []
 
-        events = self.log["events"]
-        for event in events:
+        for event in self.events:
             event_type, attributes = event["type"], event["attributes"]
 
+            # In rare cases, base64 decode required.
+            self._handle_base64_attributes(attributes)
+
             if event_type == COIN_SPENT:
+                # Remove authz_msg_index key/values (if exists) so that uniform logic afterwards is consistent.
+                attributes = self._remove_authz_msg_index(attributes)
+
                 for i in range(0, len(attributes), self._num_keys(attributes)):
                     first_key = attributes[i]["key"]
 
@@ -126,19 +185,27 @@ class MsgInfoIBC:
 
         return transfers_out
 
-    def _transfers_transfer_event(self, show_addrs=False):
+    def _transfers_from_transfer_event(self, show_addrs=False):
         """ Returns (list of inbound transfers, list of outbound transfers), relative to wallet_address
             using transfer event element only. """
         transfers_in, transfers_out = [], []
 
-        events = self.log["events"]
-        for event in events:
+        for event in self.events:
             event_type, attributes = event["type"], event["attributes"]
+
+            # In rare cases, base64 decode required.
+            self._handle_base64_attributes(attributes)
 
             if event_type == "transfer":
                 # ignore MsgMultiSend case (uses different format)
                 if self.msg_type == co.MSG_TYPE_MULTI_SEND:
                     continue
+
+                # Prevent crash in weird data where key="authz_msg_index" for last 2 attributes
+                if (len(attributes) > 1
+                     and attributes[-1]["key"] == "authz_msg_index"
+                     and attributes[-2]["key"] == "authz_msg_index"):
+                    attributes.pop()
 
                 # Handle all other cases
                 for i in range(0, len(attributes), self._num_keys(attributes)):
@@ -184,98 +251,20 @@ class MsgInfoIBC:
                 raise Exception("Unexpected amt_string: {}".format(amt_string))
             amount_raw, currency_raw = m.group(1), m.group(2)
 
-            # Convert from raw string to float amount and currency symbol
-            amount, currency = MsgInfoIBC.amount_currency_from_raw(
-                amount_raw, currency_raw, self.lcd_node, self.ibc_addresses)
+            amount, currency = self.amount_currency_single(amount_raw, currency_raw)
 
             out.append((amount, currency))
 
         return out
 
-    @staticmethod
-    def amount_currency_from_raw(amount_raw, currency_raw, lcd_node, ibc_addresses):
-        # example currency_raw:
-        # 'ibc/B3504E092456BA618CC28AC671A71FB08C6CA0FD0BE7C8A5B5A3E2DD933CC9E4'
-        # 'uluna'
-        # 'aevmos'
-        if currency_raw is None:
-            return amount_raw, currency_raw
-        elif currency_raw.startswith("ibc/"):
-            # ibc address
-            denom = None
-            try:
-                denom = ibc_address_to_denom(
-                    lcd_node, currency_raw, ibc_addresses)
-                amount, currency = MsgInfoIBC._amount_currency_convert(amount_raw, denom)
-                return amount, currency
-            except Exception as e:
-                logging.warning("Unable to find symbol for ibc address %s, denom=%s, exception=%s",
-                                currency_raw, denom, str(e))
-                amount = float(amount_raw) / co.MILLION
-                currency = "unknown_{}".format(denom if denom else currency_raw)
-                return amount, currency
-        else:
-            return MsgInfoIBC._amount_currency_convert(amount_raw, currency_raw)
-
-    @staticmethod
-    def _amount_currency_convert(amount_raw, currency_raw):
-        # Special cases for nonconforming denoms/assets
-        # currency_raw -> (currency, exponent)
-        CURRENCY_RAW_MAP = {
-            co.CUR_CRO: (co.CUR_CRO, 8),
-            co.CUR_MOBX: (co.CUR_MOBX, 9),
-            "gravity0xfB5c6815cA3AC72Ce9F5006869AE67f18bF77006": (co.CUR_PSTAKE, 18),
-            "inj": (co.CUR_INJ, 18),
-            "OSMO": (co.CUR_OSMO, 6),
-            "osmo": (co.CUR_OSMO, 6),
-            "rowan": ("ROWAN", 18),
-            "basecro": (co.CUR_CRO, 8),
-            "uusd": (co.CUR_USTC, 6),
-        }
-
-        if currency_raw in CURRENCY_RAW_MAP:
-            currency, exponent = CURRENCY_RAW_MAP[currency_raw]
-            amount = float(amount_raw) / float(10 ** exponent)
-            return amount, currency
-        elif currency_raw.startswith("gamm/"):
-            # osmosis lp currencies
-            # i.e. "gamm/pool/6" -> "GAMM-6"
-            amount = float(amount_raw) / co.EXP18
-            _, _, num = currency_raw.split("/")
-            currency = "GAMM-{}".format(num)
-            return amount, currency
-        elif currency_raw.endswith("-wei"):
-            amount = float(amount_raw) / co.EXP18
-            currency, _ = currency_raw.split("-wei")
-            currency = currency.upper()
-            return amount, currency
-        elif currency_raw.startswith("a"):
-            amount = float(amount_raw) / co.EXP18
-            currency = currency_raw[1:].upper()
-            return amount, currency
-        elif currency_raw.startswith("nano"):
-            amount = float(amount_raw) / co.EXP9
-            currency = currency_raw[4:].upper()
-            return amount, currency
-        elif currency_raw.startswith("n"):
-            amount = float(amount_raw) / co.EXP9
-            currency = currency_raw[1:].upper()
-            return amount, currency
-        elif currency_raw.startswith("u"):
-            amount = float(amount_raw) / co.MILLION
-            currency = currency_raw[1:].upper()
-            return amount, currency
-        else:
-            logging.error("_amount_currency_from_raw(): no case for amount_raw={}, currency_raw={}".format(
-                amount_raw, currency_raw))
-            amount = float(amount_raw) / co.MILLION
-            currency = "unknown_{}".format(currency_raw)
-            return amount, currency
+    def amount_currency_single(self, amount_raw, currency_raw):
+        # Convert from raw string to float amount and currency symbol
+        amount, currency = denoms.amount_currency_from_raw(amount_raw, currency_raw, self.lcd_node)
+        return amount, currency
 
     @classmethod
-    def wasm(cls, log):
+    def _wasm(cls, log):
         """ Parses wasm in log to return list of action dictionaries. """
-
         events = log["events"]
         for event in events:
             attributes, event_type = event["attributes"], event["type"]
@@ -302,6 +291,7 @@ class MsgInfoIBC:
 
                 if len(action):
                     actions.append(action)
+
                 return actions
 
         return []
@@ -311,3 +301,21 @@ class MsgInfoIBC:
             return message["contract"]
         else:
             return None
+
+    def _events_by_type(self):
+        out = {}
+        for event in self.events:
+            attributes = event["attributes"]
+            event_type = event["type"]
+
+            if event_type not in out:
+                out[event_type] = {}
+
+            for attribute in attributes:
+                k, v = str(attribute.get("key")), str(attribute.get("value"))
+
+                if k in out[event_type]:
+                    out[event_type][k] += "," + v
+                else:
+                    out[event_type][k] = v
+        return out

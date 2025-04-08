@@ -3,37 +3,47 @@ from staketaxcsv.algo.api.indexer import Indexer
 from staketaxcsv.algo.constants import ASSET_ID_ALGO
 from staketaxcsv.algo.util import b64_decode_ascii
 
+TICKER_PATTERNS = ["X-NFT", ".+"]
+
 ASSET_LP_TOKENS = {
     "TM1POOL": {
-        "pattern": re.compile(r"^Tinyman Pool (?P<asset1>\w*)-(?P<asset2>\w*)$"),
+        "pattern": re.compile(
+            fr"^Tinyman Pool (?P<asset1>{'|'.join(TICKER_PATTERNS)})-(?P<asset2>{'|'.join(TICKER_PATTERNS)})$"),
         "symbol": "TM"
     },
     "TMPOOL11": {
-        "pattern": re.compile(r"^TinymanPool1.1 (?P<asset1>\w*)-(?P<asset2>\w*)$"),
+        "pattern": re.compile(
+            fr"^TinymanPool1\.1 (?P<asset1>{'|'.join(TICKER_PATTERNS)})-(?P<asset2>{'|'.join(TICKER_PATTERNS)})$"),
         "symbol": "TM"
     },
     "TMPOOL2": {
-        "pattern": re.compile(r"^TinymanPool2.0 (?P<asset1>\w*)-(?P<asset2>\w*)$"),
+        "pattern": re.compile(
+            fr"^TinymanPool2\.0 (?P<asset1>{'|'.join(TICKER_PATTERNS)})-(?P<asset2>{'|'.join(TICKER_PATTERNS)})$"),
         "symbol": "TM"
     },
     "PLP": {
-        "pattern": re.compile(r"^(?P<asset1>\w*)\/(?P<asset2>\w*) PACT LP Token$"),
+        "pattern": re.compile(
+            fr"^(?P<asset1>{'|'.join(TICKER_PATTERNS)})\/(?P<asset2>{'|'.join(TICKER_PATTERNS)}) PACT LP Token$"),
         "symbol": "P"
     },
     "SIPLP": {
-        "pattern": re.compile(r"^(?P<asset1>\w*)\/(?P<asset2>\w*) \[SI\] PACT LP TKN$"),
+        "pattern": re.compile(
+            fr"^(?P<asset1>{'|'.join(TICKER_PATTERNS)})\/(?P<asset2>{'|'.join(TICKER_PATTERNS)}) \[SI\] PACT LP TKN$"),
         "symbol": "P"
     },
     "AF-POOL": {
-        "pattern": re.compile(r"^AF-POOL-(?P<asset1>\w*)-(?P<asset2>\w*)-\d+\.\d+BP$"),
+        "pattern": re.compile(
+            fr"^AF-POOL-(?P<asset1>{'|'.join(TICKER_PATTERNS)})-(?P<asset2>{'|'.join(TICKER_PATTERNS)})-\d+\.\d+BP$"),
         "symbol": "AF"
     },
     "HMBL1LT": {
-        "pattern": re.compile(r"^HUMBLE LP - (?P<asset1>\w*)\/(?P<asset2>\w*)$"),
+        "pattern": re.compile(
+            fr"^HUMBLE LP - (?P<asset1>{'|'.join(TICKER_PATTERNS)})\/(?P<asset2>{'|'.join(TICKER_PATTERNS)})$"),
         "symbol": "HMB"
     },
     "HMBL2LT": {
-        "pattern": re.compile(r"^HUMBLE LP - (?P<asset1>\w*)\/(?P<asset2>\w*)$"),
+        "pattern": re.compile(
+            fr"^HUMBLE LP - (?P<asset1>{'|'.join(TICKER_PATTERNS)})\/(?P<asset2>{'|'.join(TICKER_PATTERNS)})$"),
         "symbol": "HMB"
     },
 }
@@ -98,8 +108,13 @@ class Asset:
             params = self.asset_list[id]
         else:
             resp = self.indexer.get_asset(id)
+            if resp is None:
+                raise ValueError(f"Failed to retrieve asset {id}")
+
             if resp["deleted"]:
                 resp = self.indexer.get_deleted_asset(id)
+                if resp is None:
+                    raise ValueError(f"Failed to retrieve deleted asset {id}")
 
             params = _parse_asset(resp["params"])
             if params is not None:
@@ -223,8 +238,11 @@ class Asset:
     def __repr__(self):
         return "{{:.{}f}} {}".format(self._decimals, self._ticker).format(self.amount)
 
+    def is_algo(self):
+        return self._id == ASSET_ID_ALGO
+
     def zero(self):
-        return self._uint_amount == 0
+        return self._uint_amount == 0 if not self.is_algo() else self._uint_amount <= 100
 
     def is_lp_token(self):
         return self._ticker in ASSET_LP_TOKENS

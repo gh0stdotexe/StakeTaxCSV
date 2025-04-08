@@ -3,6 +3,7 @@ from datetime import datetime
 
 import staketaxcsv.luna1.col4.handle
 import staketaxcsv.luna1.col5.handle
+import staketaxcsv.luna1.col5.handle_authz
 import staketaxcsv.luna1.execute_type as ex
 from staketaxcsv.common.ErrorCounter import ErrorCounter
 from staketaxcsv.common.ExporterTypes import TX_TYPE_GOV, TX_TYPE_LOTA_UNKNOWN, TX_TYPE_VOTE
@@ -54,7 +55,8 @@ def process_tx(wallet_address, elem, exporter):
         elif msgtype == "market/MsgSwap":
             handle_swap_msgswap(exporter, elem, txinfo)
         elif msgtype in ["staking/MsgDelegate", "distribution/MsgWithdrawDelegationReward",
-                         "staking/MsgBeginRedelegate", "staking/MsgUndelegate"]:
+                         "staking/MsgBeginRedelegate", "staking/MsgUndelegate",
+                         "distribution/MsgWithdrawDelegatorReward"]:
             # LUNA staking reward
             handle_reward(exporter, elem, txinfo, msgtype)
         elif msgtype == "wasm/MsgExecuteContract":
@@ -66,6 +68,8 @@ def process_tx(wallet_address, elem, exporter):
                 staketaxcsv.luna1.col4.handle.handle(exporter, elem, txinfo)
         elif msgtype == "wasm/MsgMigrateContract":
             staketaxcsv.luna1.col5.handle.handle(exporter, elem, txinfo)
+        elif msgtype in ["authz/MsgExec", "msgauth/MsgExecAuthorized"]:
+            staketaxcsv.luna1.col5.handle_authz.handle(exporter, elem, txinfo)
         else:
             logging.error("Unknown msgtype for txid=%s", txid)
             ErrorCounter.increment("unknown_msgtype", txid)
@@ -75,9 +79,6 @@ def process_tx(wallet_address, elem, exporter):
         logging.error("Exception when handling txid=%s, exception=%s", txid, str(e))
         ErrorCounter.increment("exception", txid)
         handle_unknown(exporter, txinfo)
-
-        if localconfig.debug:
-            raise (e)
 
     return txinfo
 
@@ -180,4 +181,4 @@ def _msgs(elem, wallet_address):
 
 
 def _actions(log):
-    return MsgInfoIBC.wasm(log)
+    return MsgInfoIBC._wasm(log)

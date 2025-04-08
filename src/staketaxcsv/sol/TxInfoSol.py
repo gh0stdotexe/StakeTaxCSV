@@ -8,7 +8,7 @@ class TxInfoSol(TxInfo):
     """Common properties across every blockchain transaction (only)"""
 
     def __init__(self, txid, timestamp, fee, wallet_address):
-        url = "https://solscan.io/tx/{}".format(txid)
+        url = "https://solana.fm/tx/{}".format(txid)
         super().__init__(txid, timestamp, fee, CURRENCY_SOL, wallet_address, EXCHANGE_SOLANA_BLOCKCHAIN, url)
 
         self.fee_blockchain = None
@@ -37,6 +37,8 @@ class TxInfoSol(TxInfo):
         self.lp_transfers = []
         self.lp_transfers_net = []
         self.lp_fee = ""
+
+        self.wallet_balances = {}
 
     def print(self):
         print("txid: {}".format(self.txid))
@@ -76,6 +78,8 @@ class TxInfoSol(TxInfo):
         pprint.pprint(self.balance_changes_all)
         print("\nbalance_changes_wallet:")
         pprint.pprint(self.balance_changes_wallet)
+        print("\nwallet_balances (after transaction):")
+        pprint.pprint(self.wallet_balances)
 
         print("\ntransfers_in:")
         pprint.pprint(self.transfers[0])
@@ -106,9 +110,16 @@ class WalletInfo:
     def __init__(self, wallet_address):
         self.wallet_address = wallet_address
         self.staking_addrs = set()
+        self.marinade_native = False
 
     def add_staking_address(self, address):
         self.staking_addrs.add(address)
 
     def get_staking_addresses(self):
         return self.staking_addrs
+
+    def set_marinade_native(self):
+        self.marinade_native = True
+
+    def has_marinade_native(self):
+        return self.marinade_native

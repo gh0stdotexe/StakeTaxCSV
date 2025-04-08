@@ -5,16 +5,13 @@ from urllib.parse import urlencode
 
 import requests
 import staketaxcsv.common.ibc.constants as co
-from staketaxcsv.common.debug_util import use_debug_files
-from staketaxcsv.common.ibc.api_common import (
-    EVENTS_TYPE_LIST_DEFAULT,
-    EVENTS_TYPE_RECIPIENT,
-    EVENTS_TYPE_SENDER,
-    EVENTS_TYPE_SIGNER,
-    TXS_LIMIT_PER_QUERY,
-    remove_duplicates,
-)
+from staketaxcsv.common.debug_util import debug_cache
+from staketaxcsv.common.ibc.constants import (
+    EVENTS_TYPE_SENDER, EVENTS_TYPE_RECIPIENT, EVENTS_TYPE_SIGNER, EVENTS_TYPE_LIST_DEFAULT)
+from staketaxcsv.common.ibc.util_ibc import remove_duplicates
 from staketaxcsv.settings_csv import REPORTS_DIR
+from staketaxcsv.common.query import get_with_retries
+TXS_LIMIT_PER_QUERY = 50
 
 
 class LcdAPI_v1:
@@ -24,15 +21,16 @@ class LcdAPI_v1:
 
     def __init__(self, node):
         self.node = node
+        self.version = None
 
     def _query(self, uri_path, query_params, sleep_seconds=0):
         url = f"{self.node}{uri_path}"
         logging.info("Requesting url %s?%s ...", url, urlencode(query_params))
-        response = self.session.get(url, params=query_params)
+        data = get_with_retries(self.session, url, query_params, {})
 
         if sleep_seconds:
             time.sleep(sleep_seconds)
-        return response.json()
+        return data
 
     def _node_info(self):
         uri_path = f"/cosmos/base/tendermint/v1beta1/node_info"
@@ -41,6 +39,9 @@ class LcdAPI_v1:
 
     def cosmos_sdk_version(self):
         """ i.e. "0.45.13" """
+        if self.version:
+            return self.version
+
         data = self._node_info()
         version = data["application_version"]["cosmos_sdk_version"]
 
@@ -52,6 +53,7 @@ class LcdAPI_v1:
         if hyphen_index != -1:
             version = version[:hyphen_index]
 
+        self.version = version
         return version
 
     def get_tx(self, txid):
@@ -59,19 +61,22 @@ class LcdAPI_v1:
         data = self._query(uri_path, {}, sleep_seconds=1)
         return data.get("tx_response", None)
 
-    def _account_exists(self, wallet_address):
+    def _account(self, wallet_address):
         uri_path = f"/cosmos/auth/v1beta1/accounts/{wallet_address}"
         data = self._query(uri_path, {})
         return data
 
     def account_exists(self, wallet_address):
-        data = self._account_exists(wallet_address)
+        data = self._account(wallet_address)
         if "account" in data:
             return True
         else:
             return False
 
-    @use_debug_files(None, REPORTS_DIR)
+    def account(self, wallet_address):
+        return self._account(wallet_address)
+
+    @debug_cache(REPORTS_DIR)
     def _get_txs(self, wallet_address, events_type, offset, limit, sleep_seconds):
         uri_path = "/cosmos/tx/v1beta1/txs"
         query_params = {
@@ -133,27 +138,39 @@ class LcdAPI_v1:
         data = self._query(uri_path, query_params)
         return data
 
+    def _staking_params(self):
+        uri_path = "/cosmos/staking/v1beta1/params"
+        query_params = {}
+        data = self._query(uri_path, query_params)
+        return data
 
-def get_txs_all(node, address, progress, max_txs, limit=TXS_LIMIT_PER_QUERY, sleep_seconds=1,
-                debug=False, stage_name="default", events_types=None):
-    LcdAPI_v1.debug = debug
+    def get_bond_denom(self):
+        data = self._staking_params()
+        return data["params"]["bond_denom"]
+
+
+def get_txs_all(node, address, max_txs, progress=None, limit=TXS_LIMIT_PER_QUERY, sleep_seconds=1,
+                stage_name="default", events_types=None):
     api = LcdAPI_v1(node)
     events_types = events_types if events_types else EVENTS_TYPE_LIST_DEFAULT
     max_pages = math.ceil(max_txs / limit)
 
     out = []
-    page_for_progress = 1
+    pages_total = 0
     for events_type in events_types:
         offset = 0
+        if progress:
+            progress.report_message(f"Starting fetch for event_type={events_type}")
 
-        for _ in range(0, max_pages):
-            message = f"Fetching page {page_for_progress} for {events_type} ..."
-            progress.report(page_for_progress, message, stage_name)
-            page_for_progress += 1
-
+        for i in range(max_pages):
             elems, offset, _ = api.get_txs(address, events_type, offset, limit, sleep_seconds)
-
             out.extend(elems)
+
+            pages_total += 1
+            if progress:
+                message = f"Fetched page {i+1} for {events_type} stage ..."
+                progress.report(pages_total, message, stage_name)
+
             if offset is None:
                 break
 
@@ -161,9 +178,7 @@ def get_txs_all(node, address, progress, max_txs, limit=TXS_LIMIT_PER_QUERY, sle
     return out
 
 
-def get_txs_pages_count(node, address, max_txs, limit=TXS_LIMIT_PER_QUERY, debug=False,
-                        events_types=None, sleep_seconds=1):
-    LcdAPI_v1.debug = debug
+def get_txs_pages_count(node, address, max_txs, limit=TXS_LIMIT_PER_QUERY, events_types=None, sleep_seconds=1):
     api = LcdAPI_v1(node)
     events_types = events_types if events_types else EVENTS_TYPE_LIST_DEFAULT
 
@@ -178,20 +193,6 @@ def get_txs_pages_count(node, address, max_txs, limit=TXS_LIMIT_PER_QUERY, debug
         total_pages += num_pages
 
     return total_pages
-
-
-def ibc_address_to_denom(node, ibc_address, ibc_addresses):
-    if ibc_address in IBC_ADDRESSES_TO_DENOM:
-        return IBC_ADDRESSES_TO_DENOM[ibc_address]
-    if not node:
-        return None
-    if ibc_address in ibc_addresses:
-        return ibc_addresses[ibc_address]
-
-    denom = LcdAPI_v1(node).ibc_address_to_denom(ibc_address)
-
-    ibc_addresses[ibc_address] = denom
-    return denom
 
 
 # Add only if regular lcd api lookup is missing functional data

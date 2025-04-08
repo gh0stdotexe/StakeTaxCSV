@@ -1,9 +1,11 @@
 
 # staketaxcsv
 
-* Python repository to create blockchain CSVs for Algorand (ALGO), Cosmos (ATOM), Agoric (BLD), Bitsong (BTSG),
-  Sentinel (DVPN), Evmos (EVMOS), Fetch.ai (FET), Chihuahua (HUAHUA), IoTex (IOTX), Juno (JUNO), Kujira (KUJI),
-  KYVE Network (KYVE), Terra Classic (LUNC), Terra 2.0 (LUNA), Osmosis (OSMO), Solana (SOL), and Stargaze (STARS) blockchains. 
+* Python repository to create blockchain CSVs for Akash (AKT), Algorand (ALGO), Archway (ARCH), Cosmos (ATOM), 
+  Agoric (BLD), Bitsong (BTSG), Sentinel (DVPN), dYdX (DYDX), Dymension (DYM), Evmos (EVMOS), Fetch.ai (FET),
+  Gravity Bridge (GRAV), Chihuahua (HUAHUA), IoTex (IOTX), Injective (INJ), Juno (JUNO), Kujira (KUJI), 
+  KYVE Network (KYVE), Terra Classic (LUNC), Terra 2.0 (LUNA), Neutron (NTRN), Nolus Protocol (NLS), Osmosis (OSMO),
+  Saga (SAGA), Sei (SEI), Solana (SOL), Stargaze (STARS), Stride (STRD), and Celestia (TIA). 
 * CSV codebase for <https://stake.tax>
 * Contributions/PRs highly encouraged, such as support for new txs, blockchains, or CSV formats.  Examples:
   * Add cosmo-based-blockchain CSV: https://docs.stake.tax/devs/adding-csv-in-cosmos-based-ecosystem
@@ -30,78 +32,49 @@
   ```
 
 * Usage as CLI
-  * Remember to add your path to *staketaxcsv/src* to the `PYTHONPATH` environment variable.
-  * Same arguments apply for report_algo.py (ALGO), report_atom.py (ATOM), report_*.py:
+  * See [PYTHONPATH issues](README_reference.md#PYTHONPATH-issues) if encountering import errors.
+  * Same arguments apply for report_algo.py (ALGO), ..., report_*.py:
   
   ```sh
   cd src
   
   # Create default CSV
-  python3 staketaxcsv/report_atom.py <wallet_address>
+  python3 staketaxcsv/report_osmo.py <wallet_address>
   
   # Create all CSV formats (i.e. koinly, cointracking, etc.)
-  python3 staketaxcsv/report_atom.py <wallet_address> --format all
+  python3 staketaxcsv/report_osmo.py <wallet_address> --format all
   
   # Show CSV result for single transaction (great for development/debugging)
-  python3 staketaxcsv/report_atom.py <wallet_address> --txid <txid>
+  python3 staketaxcsv/report_osmo.py <wallet_address> --txid <txid>
   
   # Show CSV result for single transaction in debug mode (great for development/debugging)
-  python3 staketaxcsv/report_atom.py <wallet_address> --txid <txid> --debug
+  python3 staketaxcsv/report_osmo.py <wallet_address> --txid <txid> --debug
+
+  # Create historical balances CSV
+  python3 staketaxcsv/report_osmo.py <wallet_address> --historical
+  
+  # Create cosmos+ CSV
+  python3 staketaxcsv/report_cosmosplus <wallet_address> --cosmosplus_node <url_lcd_node> --cosmosplus_ticker <token_symbol>
   ```
 
-* Usage as staketaxcsv module
-
-  ```
-    >>> import staketaxcsv
-    >>> help(staketaxcsv.api)
-    >>>
-    >>> address = "<SOME_ADDRESS>"
-    >>> txid = "<SOME_TXID>"
-    >>>
-    >>> staketaxcsv.formats()
-    ['default', 'balances', 'accointing', 'bitcointax', 'coinledger', 'coinpanda', 'cointelli', 'cointracking', 'cointracker', 'cryptio', 'cryptocom', 'cryptotaxcalculator', 'cryptoworth', 'koinly', 'recap', 'taxbit', 'tokentax', 'zenledger']
-    >>>
-    >>> staketaxcsv.tickers()
-    ['ALGO', 'ATOM', 'BLD', 'BTSG', 'DVPN', 'EVMOS', 'FET', 'HUAHUA', 'IOTX', 'JUNO', 'KUJI', 'LUNA1', 'LUNA2', 'OSMO', 'REGEN', 'SOL', 'STARS']
-    >>>
-    >>> # write single transaction CSV
-    >>> staketaxcsv.transaction("ATOM", address, txid, "koinly")
-    ...
-    >>> # write koinly CSV
-    >>> staketaxcsv.csv("ATOM", address, "koinly")
-    ...
-    >>> # write all CSVs (koinly, cointracking, etc.)
-    >>> staketaxcsv.csv_all("ATOM", address)
-    ...
-    >>> # check address is valid
-    >>> staketaxcsv.has_csv("ATOM", address)
-    True
-  ```
-
-
-# Docker
-
-See [Docker](README_reference.md#docker) to alternatively install/run in docker container.
+* Usage as staketaxcsv module: see [Usage as staketaxcsv module](README_reference.md#usage-as-staketaxcsv-module)
 
 # Contributing Code
 
+* See [Tests](README_reference.md#tests) for running unit tests.
 * See [Linting](README_reference.md#linting) to see code style feedback.
-* Providing a sample txid will expedite a pull request (email support@stake.tax,
-  DM @staketax, etc.):
-
-  ```
-  # For a given txid, your PR (most commonly) should print different output before/after:
-  python3 staketaxcsv/report_osmo.py <wallet_address> --txid <txid>
-  ```
+* See [Docker](README_reference.md#docker) to alternatively install/run in docker container.
 
 # Reference
 
 See [README_reference.md](README_reference.md):
 
-* [Code Style](README_reference.md#code-style)
 * [Linting](README_reference.md#linting)
-* [Unit Tests](README_reference.md#unit-tests)
+* [Tests](README_reference.md#tests)
+* [Usage as staketaxcsv module](README_reference.md#usage-as-staketaxcsv-module)
 * [Docker](README_reference.md#docker)
+* [PYTHONPATH Issues](README_reference.md#pythonpath-issues)
+* [Run CSV job with no transaction limit](README_reference.md#run-csv-job-with-no-transaction-limit)
 * [Ideal Configuration](README_reference.md#ideal-configuration)
   * [RPC Node Settings](README_reference.md#rpc-node-settings)
   * [DB Cache](README_reference.md#db-cache)

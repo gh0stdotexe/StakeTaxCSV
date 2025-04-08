@@ -9,8 +9,8 @@ import time
 from urllib.parse import urlencode
 
 import requests
-from staketaxcsv.common.ibc.api_common import EVENTS_TYPE_RECIPIENT, EVENTS_TYPE_SENDER, EVENTS_TYPE_SIGNER
-from staketaxcsv.settings_csv import TERRA_LCD_NODE
+from staketaxcsv.common.ibc.constants import EVENTS_TYPE_SENDER, EVENTS_TYPE_RECIPIENT, EVENTS_TYPE_SIGNER
+from staketaxcsv.settings_csv import LUNA1_NODE
 
 LIMIT_TX_QUERY = 50
 
@@ -26,8 +26,15 @@ class LcdAPI:
         return data
 
     @classmethod
+    def contract_history(cls, contract):
+        uri = "/cosmwasm/wasm/v1/contract/{}/history".format(contract)
+        logging.info("Querying lcd for contract history of %s ...", contract)
+        data = cls._query(uri, {})
+        return data
+
+    @classmethod
     def _query(cls, uri_path, query_params, sleep_seconds=1):
-        url = f"{TERRA_LCD_NODE}{uri_path}"
+        url = f"{LUNA1_NODE}{uri_path}"
         logging.info("Requesting url %s?%s", url, urlencode(query_params))
         response = cls.session.get(url, params=query_params)
 
@@ -58,6 +65,10 @@ class LcdAPI:
 
     @classmethod
     def num_txs(cls, wallet_address):
+        return 200
+
+        # TODO: Fix this function.  Changes to LCD api make this no longer work.
+
         data = cls._get_txs(wallet_address, EVENTS_TYPE_SENDER, 0, LIMIT_TX_QUERY, 0)
         num_send = int(data["pagination"]["total"])
 

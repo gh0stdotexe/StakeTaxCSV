@@ -8,20 +8,71 @@
 * pep8 code style
 * Can check for linter errors before submitting a pull request:
   ```sh
-  # (some configuration in setup.cfg)
+  # run at base directory (some configuration in setup.cfg)
   pycodestyle
   ```
 
-# Unit Tests
+# Tests
 
-You may notice a lack of unit tests in this codebase. Though tests exist, I omitted them because they rely on extensive
-use of real world wallet data. For the sake of all users' privacy, I do not include these tests. I'm open to ideas for
-alternatives or PRs for non-invasive tests, since obviously this is non-optimal.
-
-Note to contributors: I encourage you to be proactive with changes before I find a solution to the testing problem.
-Private tests are run for most txs types and perfection without those tests is not expected.  Of course, try to be 
-perfect :).
+* Examples:
+  ```
+  cd src
   
+  # run tests (verbose mode)
+  python -m unittest -v
+  
+  # run tests matching ...
+  python -m unittest -k "test_redelegate"
+  
+  # run exact test
+  python -m unittest tests.tests.test_osmo.TestOsmo.test_redelegate
+  
+  # run tests with different granularity
+  python -m unittest tests.tests.test_osmo.TestOsmo
+  python -m unittest tests.tests.test_osmo
+  
+  # run tests in file
+  python -m unittest tests/tests/test_osmo.py
+  
+  # run special tests that require certain network/db/settings
+  SPECIALTEST=1 python -m unittest
+  ```
+  
+* Tests located at tests/tests/test*.py
+* Note: test suite very limited at the moment.  It should expand over time.
+
+
+# Usage as staketaxcsv module
+```
+  >>> import staketaxcsv
+  >>> help(staketaxcsv.api)
+  >>>
+  >>> address = "<SOME_ADDRESS>"
+  >>> txid = "<SOME_TXID>"
+  >>>
+  >>> staketaxcsv.formats()
+  ['default', 'balances', 'accointing', 'bitcointax', 'coinledger', 'coinpanda', 'cointelli', 'cointracking', 'cointracker', 'cryptio', 'cryptocom', 'cryptotaxcalculator', 'cryptoworth', 'koinly', 'recap', 'taxbit', 'tokentax', 'zenledger']
+  >>>
+  >>> staketaxcsv.tickers()
+  ['ALGO', 'ATOM', 'BLD', 'BTSG', 'DVPN', 'EVMOS', 'FET', 'HUAHUA', 'IOTX', 'JUNO', 'KUJI', 'LUNA1', 'LUNA2', 'OSMO', 'REGEN', 'SOL', 'STARS']
+  >>>
+  >>> # write single transaction CSV
+  >>> staketaxcsv.transaction("ATOM", address, txid, "koinly")
+  ...
+  >>> # write koinly CSV
+  >>> staketaxcsv.csv("OSMO", address, "koinly")
+  ...
+  >>> # write all CSVs (koinly, cointracking, etc.)
+  >>> staketaxcsv.csv_all("OSMO", address)
+  ...
+  >>> # check address is valid
+  >>> staketaxcsv.has_csv("OSMO", address)
+  True
+  >>>> # write true wallet balance CSV
+  >>> staketaxcsv.historical_balances("OSMO", "osmo1ku03asknjnx7dse9jgujc529vwscp6n50z5wet")
+  ...
+```
+
 # Docker
 
 Sample of using a docker container
@@ -36,6 +87,14 @@ docker run --platform linux/amd64 -it --volume $PWD:/staketaxcsv staketaxcsv bas
 # See README.md Usage section to run script(s)
 # https://github.com/hodgerpodger/staketaxcsv#usage
 ```
+
+# PYTHONPATH Issues
+
+* It may be necessary to edit the `PYTHONPATH` if you encounter import errors.
+* For example, you can add to ~/.bash_profile or ~/.bashrc (and restart shell):
+  ```
+  export PYTHONPATH=$PYTHONPATH:<INSERT_PATH_TO_REPO_HERE>/src`
+  ```  
 
 # Run CSV job with no transaction limit
 
@@ -62,9 +121,9 @@ Default code was made to work out of the box. These are changes that require man
 
 ## RPC Node settings
 
-* Default `sample.env` points to public RPC nodes.  This generally works, up to a point.
-* Edit/uncomment `sample.env` to change to point to more reliable private RPC node(s).
-  * Examples for private RPC nodes (Figment, Quicknode) are included.
+* Default `sample.env` points to public RPC nodes.  This generally works but sometimes better alternatives may exist (i.e. private nodes).
+* Edit/uncomment `sample.env` to change environment variable settings (and reload sample.env).
+
 
 ## DB Cache
 
@@ -106,3 +165,10 @@ Alternatively, you may implement your own Cache class (common/cache.py).
   # install pip packages (same as README.md)
   pip3 install -r requirements.txt
   ```
+
+# Update recognized tokens for solana report to latest
+
+```
+cd src
+python staketaxcsv/sol/tickers/gather/jupiter.py
+```

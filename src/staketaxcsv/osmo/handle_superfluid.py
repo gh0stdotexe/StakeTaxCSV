@@ -2,7 +2,7 @@ from staketaxcsv.osmo import util_osmo
 from staketaxcsv.osmo.handle_lp import LockedTokens
 from staketaxcsv.osmo.handle_unknown import handle_unknown_detect_transfers
 from staketaxcsv.osmo.make_tx import make_osmo_lp_stake_tx, make_osmo_simple_tx
-
+from staketaxcsv.osmo.handle_concentrated_lp import handle_create_position
 
 def handle_delegate(exporter, txinfo, msginfo):
     lock_id = msginfo.message["lock_id"]
@@ -40,3 +40,7 @@ def handle_undelegate_or_unbond(exporter, txinfo, msginfo):
         return
 
     handle_unknown_detect_transfers(exporter, txinfo, msginfo)
+
+
+def handle_create_full_range_position_and_superfluid_delegate(exporter, txinfo, msginfo):
+    return handle_create_position(exporter, txinfo, msginfo)

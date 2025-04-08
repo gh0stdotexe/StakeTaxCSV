@@ -1,5 +1,6 @@
 from staketaxcsv.common.Exporter import Row
-from staketaxcsv.common.ExporterTypes import TX_TYPE_LP_DEPOSIT, TX_TYPE_LP_WITHDRAW, TX_TYPE_STAKING
+from staketaxcsv.common.ExporterTypes import (
+    TX_TYPE_LP_DEPOSIT, TX_TYPE_LP_WITHDRAW, TX_TYPE_STAKING, TX_TYPE_MARS_LEND, TX_TYPE_MARS_RECLAIM)
 from staketaxcsv.common.make_tx import (
     _make_tx_exchange,
     make_reward_tx,
@@ -8,21 +9,24 @@ from staketaxcsv.common.make_tx import (
     make_transfer_out_tx,
     make_unknown_tx,
     make_unknown_tx_with_transfer,
+    make_spend_tx,
+    make_borrow_tx,
+    make_repay_tx,
 )
 from staketaxcsv.osmo import util_osmo
 from staketaxcsv.osmo.constants import EXCHANGE_OSMOSIS
 
 
-def _edit_row(row, txinfo, msginfo):
+def _edit_row(row, txinfo, msginfo, empty_fee=False):
     row.txid = txinfo.txid + "-" + str(msginfo.msg_index)
-    if msginfo.msg_index > 0:
+    if empty_fee or msginfo.msg_index > 0:
         row.fee = ""
         row.fee_currency = ""
 
 
 def make_osmo_tx(txinfo, msginfo, sent_amount, sent_currency, received_amount, received_currency,
-                 txid=None, empty_fee=False):
-    tx_type = util_osmo._make_tx_type(msginfo)
+                 txid=None, empty_fee=False, tx_type=None):
+    tx_type = tx_type if tx_type else util_osmo._make_tx_type(msginfo)
     row = _make_tx_exchange(
         txinfo, sent_amount, sent_currency, received_amount, received_currency, tx_type,
         txid=txid, empty_fee=empty_fee)
@@ -35,8 +39,8 @@ def make_osmo_simple_tx(txinfo, msginfo):
     return row
 
 
-def make_osmo_swap_tx(txinfo, msginfo, sent_amount, sent_currency, received_amount, received_currency):
-    row = make_swap_tx(txinfo, sent_amount, sent_currency, received_amount, received_currency)
+def make_osmo_swap_tx(txinfo, msginfo, sent_amount, sent_currency, received_amount, received_currency, empty_fee=False):
+    row = make_swap_tx(txinfo, sent_amount, sent_currency, received_amount, received_currency, empty_fee=empty_fee)
     _edit_row(row, txinfo, msginfo)
     return row
 
@@ -47,7 +51,7 @@ def make_osmo_reward_tx(txinfo, msginfo, reward_amount, reward_currency):
     return row
 
 
-def make_lp_reward_tx(wallet_address, day, reward_amount, reward_currency):
+def make_lp_reward_tx(wallet_address, day, reward_amount, reward_currency, row_comment=""):
     timestamp = "{} 17:15:00".format(day)
     txid = "{}.{}.{}".format(wallet_address, day, reward_currency)
     row = Row(
@@ -64,25 +68,26 @@ def make_lp_reward_tx(wallet_address, day, reward_amount, reward_currency):
         txid=txid,
         url=""
     )
-    row.comment = "lp_reward"
+    if row_comment:
+        row.comment += row_comment
     return row
 
 
-def make_osmo_transfer_out_tx(txinfo, msginfo, sent_amount, sent_currency, dest_address=None):
+def make_osmo_transfer_out_tx(txinfo, msginfo, sent_amount, sent_currency, dest_address=None, empty_fee=False):
     row = make_transfer_out_tx(txinfo, sent_amount, sent_currency, dest_address)
-    _edit_row(row, txinfo, msginfo)
+    _edit_row(row, txinfo, msginfo, empty_fee)
     return row
 
 
-def make_osmo_transfer_in_tx(txinfo, msginfo, received_amount, received_currency):
+def make_osmo_transfer_in_tx(txinfo, msginfo, received_amount, received_currency, empty_fee=False):
     row = make_transfer_in_tx(txinfo, received_amount, received_currency)
-    _edit_row(row, txinfo, msginfo)
+    _edit_row(row, txinfo, msginfo, empty_fee)
     return row
 
 
-def make_osmo_unknown_tx(txinfo, msginfo):
+def make_osmo_unknown_tx(txinfo, msginfo, empty_fee=False):
     row = make_unknown_tx(txinfo)
-    _edit_row(row, txinfo, msginfo)
+    _edit_row(row, txinfo, msginfo, empty_fee)
     return row
 
 
@@ -90,7 +95,7 @@ def make_osmo_unknown_tx_with_transfer(txinfo, msginfo, sent_amount, sent_curren
                                        received_currency, empty_fee=False, z_index=0):
     row = make_unknown_tx_with_transfer(
         txinfo, sent_amount, sent_currency, received_amount, received_currency, empty_fee, z_index)
-    _edit_row(row, txinfo, msginfo)
+    _edit_row(row, txinfo, msginfo, empty_fee)
     return row
 
 
@@ -119,4 +124,28 @@ def make_osmo_lp_stake_tx(txinfo, msginfo, lp_amount, lp_currency, period_lock_i
 def make_osmo_lp_unstake_tx(txinfo, msginfo, lp_amount, lp_currency, period_lock_id):
     row = make_osmo_tx(txinfo, msginfo, "", "", lp_amount, lp_currency)
     row.comment = "lp_unstake (period_lock_id: {})".format(period_lock_id)
+    return row
+
+
+def make_osmo_spend_tx(txinfo, msginfo, sent_amount, sent_currency):
+    row = make_spend_tx(txinfo, sent_amount, sent_currency)
+    _edit_row(row, txinfo, msginfo)
+    return row
+
+
+def make_osmo_borrow_tx(txinfo, msginfo, borrow_amt, borrow_cur, empty_fee=False):
+    row = make_borrow_tx(txinfo, borrow_amt, borrow_cur)
+    _edit_row(row, txinfo, msginfo, empty_fee)
+    return row
+
+
+def make_osmo_repay_tx(txinfo, msginfo, repay_amt, repay_cur, empty_fee=False):
+    row = make_repay_tx(txinfo, repay_amt, repay_cur)
+    _edit_row(row, txinfo, msginfo, empty_fee)
+    return row
+
+
+def make_mars_custom_tx(txinfo, msginfo, tx_type, empty_fee=False):
+    row = make_osmo_tx(txinfo, msginfo, "", "", "", "", tx_type=tx_type)
+    _edit_row(row, txinfo, msginfo, empty_fee)
     return row

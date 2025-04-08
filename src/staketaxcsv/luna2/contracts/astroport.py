@@ -10,11 +10,6 @@ CONTRACT_ASTROPORT_GENERATOR = "terra1ksvlfex49desf4c452j6dewdjs6c48nafemetuwjyj
 CONTRACT_ASTROPORT_ROUTER_2 = "terra19hz374h6ruwtzrnm8ytkae782uv79h9yt9tuytgvt94t26c4793qnfg7vn"
 
 
-def is_astroport_pair_contract(contract_data):
-    return ("contract_info" in contract_data
-           and contract_data["contract_info"].get("label") in ("Astroport pair", "Astroport LP token"))
-
-
 def handle_astroport(elem, txinfo):
     rows = []
 
@@ -123,6 +118,16 @@ def _is_swap(actions):
 
 
 def _handle_swap(txinfo, msginfo):
+    transfers_in, transfer_out = msginfo.transfers_net
+
+    if len(transfers_in) == 1 and len(transfer_out) == 1:
+        sent_amount, sent_currency = transfer_out[0]
+        receive_amount, receive_currency = transfers_in[0]
+        row = staketaxcsv.common.make_tx.make_swap_tx(txinfo, sent_amount, sent_currency, receive_amount, receive_currency)
+        return [row]
+
+    raise Exception("Unable to handle swap")
+
     actions = msginfo.wasm
     swap_actions = [action for action in actions if action["action"] == "swap"]
 
